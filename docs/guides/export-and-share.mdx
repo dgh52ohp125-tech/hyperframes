@@ -1,4 +1,5 @@
 ---
+# Modified 2026-11-05: document collision-safe external asset copies from upstream PR 6722.
 title: "Render a video to MP4"
 sidebarTitle: "Render"
 description: "Review the project, run its checks, render through an agent, the browser editor, or the CLI, and deliver the right file or link."
@@ -137,6 +138,10 @@ outside the project directory. Percent-encoded paths work too, such as
 Local images outside the project referenced by an `<img>` or `<source>` element's
 `srcset` are included too. Their size or pixel-density descriptors are preserved,
 and your source files stay unchanged.
+
+Copied external assets go under `_ext/` in the uploaded project. If a path is
+already occupied, the copy gets a suffix such as `logo_2.png`, and its references
+use that name. Existing project assets keep their names and contents.
 
 Before sharing source, remove secrets and confirm that every included media file
 can be shared. Tell a reviewer whether you need feedback on story, visuals,

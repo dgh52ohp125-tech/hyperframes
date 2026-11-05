@@ -589,9 +589,9 @@ function localizeCssEntry(ctx: ExternalAssetContext, entryPath: string, content:
 }
 
 /**
- * Scan HTML and CSS files for asset references that resolve outside the
- * project directory. Copy those files into the archive under `_ext/` and
- * rewrite the references so the published project is self-contained.
+ * Copy external HTML/CSS assets into `_ext/` and rewrite their references.
+ * Modified in this fork: preserve occupied paths when localizing assets.
+ * Source: https://github.com/heygen-com/hyperframes/pull/6722
  */
 export function localizeExternalAssets(
   absProjectDir: string,
@@ -603,7 +603,7 @@ export function localizeExternalAssets(
     fileContents,
     onDiskMinBytes,
     externalMap: new Map(),
-    usedArchivePaths: new Set(),
+    usedArchivePaths: new Set(fileContents.keys()),
   };
 
   for (const [entryPath, content] of [...fileContents.entries()]) {
