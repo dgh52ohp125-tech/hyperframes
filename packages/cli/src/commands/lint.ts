@@ -1,3 +1,4 @@
+// Modified in this fork: expose Studio-host static validation with --studio.
 import { setCommandExitCode } from "../utils/commandResult.js";
 import { defineCommand } from "../utils/defineCommand.js";
 import type { Example } from "./_examples.js";
@@ -8,6 +9,7 @@ export const examples: Example[] = [
   ["Lint the current project", "hyperframes lint"],
   ["Lint a specific directory", "hyperframes lint ./my-video"],
   ["Lint one composition file", "hyperframes lint ./my-video/compositions/intro.html"],
+  ["Check Studio's static structure requirements", "hyperframes lint ./my-video --studio"],
   ["Output findings as JSON", "hyperframes lint --json"],
   ["Include info-level findings", "hyperframes lint --verbose"],
 ];
@@ -34,6 +36,11 @@ export default defineCommand({
       description: "Output findings as JSON",
       default: false,
     },
+    studio: {
+      type: "boolean",
+      description: "Use Studio's stricter static structure rules (does not launch a browser)",
+      default: false,
+    },
     verbose: {
       type: "boolean",
       description: "Show info-level findings (hidden by default)",
@@ -55,12 +62,16 @@ export default defineCommand({
     try {
       const verbose = Boolean(args.verbose || args["lint-verbose"]);
       const { project, entryFile } = resolveLintTarget(args.dir);
+      const isSubComposition = entryFile && isUnderCompositions(project.dir, entryFile);
       const startedAt = Date.now();
       const lintResult = await lintProject(
         project.dir,
         entryFile,
-        entryFile && isUnderCompositions(project.dir, entryFile)
-          ? { isSubComposition: true }
+        args.studio || isSubComposition
+          ? {
+              ...(args.studio ? { host: "studio" } : {}),
+              ...(isSubComposition ? { isSubComposition: true } : {}),
+            }
           : undefined,
       );
       trackLintRun(project.dir, lintResult, {

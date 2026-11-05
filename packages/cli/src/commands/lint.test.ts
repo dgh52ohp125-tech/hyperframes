@@ -1,4 +1,5 @@
 // fallow-ignore-file code-duplication
+// Modified in this fork: cover opt-in Studio rules and subcomposition option preservation.
 // Regression: `lint --json` used process.exit() right after console.log(JSON).
 // process.exit() terminates before Node flushes an async (non-TTY / piped)
 // stdout, so piping `hyperframes lint --json` on Windows silently lost the whole
@@ -10,9 +11,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { consumeCommandResult } from "../utils/commandResult.js";
 
 const lintProjectMock = vi.fn();
+function defaultLintTarget(dir?: string): {
+  project: { dir: string; name: string };
+  entryFile?: string;
+} {
+  return { project: { dir: dir ?? "/proj", name: "proj" } };
+}
+const resolveLintTargetMock = vi.fn(defaultLintTarget);
+
+beforeEach(() => {
+  resolveLintTargetMock.mockImplementation(defaultLintTarget);
+});
 
 vi.mock("../utils/project.js", () => ({
-  resolveLintTarget: (dir?: string) => ({ project: { dir: dir ?? "/proj", name: "proj" } }),
+  resolveLintTarget: (dir?: string) => resolveLintTargetMock(dir),
+  isUnderCompositions: (_dir: string, file: string) => file.includes("/compositions/"),
 }));
 vi.mock("../utils/lintProject.js", () => ({
   lintProject: (...args: unknown[]) => lintProjectMock(...args),
@@ -126,5 +139,48 @@ describe("lint --lint-verbose", () => {
     expect(await codes({})).toEqual(["warn"]);
     expect(await codes({ verbose: true })).toEqual(["warn", "note"]);
     expect(await codes({ "lint-verbose": true })).toEqual(["warn", "note"]);
+  });
+});
+
+describe("lint --studio", () => {
+  beforeEach(() => {
+    consumeCommandResult();
+    lintProjectMock.mockClear();
+    lintProjectMock.mockResolvedValue({
+      results: [{ result: { findings: [] }, file: "index.html" }],
+      totalErrors: 0,
+      totalWarnings: 0,
+      totalInfos: 0,
+    });
+    resolveLintTargetMock.mockReturnValue({ project: { dir: "/proj", name: "proj" } });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    consumeCommandResult();
+  });
+
+  it.each([undefined, false])("preserves normal lint options when studio is %s", async (studio) => {
+    await run({ json: true, studio });
+    expect(lintProjectMock).toHaveBeenCalledWith("/proj", undefined, undefined);
+  });
+
+  it("opts into the shared Studio-host rules", async () => {
+    await run({ json: true, studio: true });
+    expect(lintProjectMock).toHaveBeenCalledWith("/proj", undefined, { host: "studio" });
+  });
+
+  it.each([false, true])("preserves subcomposition scope with studio=%s", async (studio) => {
+    const entryFile = "/proj/compositions/artwork.html";
+    resolveLintTargetMock.mockReturnValue({
+      project: { dir: "/proj", name: "proj" },
+      entryFile,
+    });
+    await run({ json: true, studio });
+    expect(lintProjectMock).toHaveBeenCalledWith("/proj", entryFile, {
+      isSubComposition: true,
+      ...(studio ? { host: "studio" } : {}),
+    });
   });
 });

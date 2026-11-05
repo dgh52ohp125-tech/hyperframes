@@ -1,4 +1,5 @@
 ---
+# Modified 2026-11-05: document opt-in Studio-host static lint validation.
 title: CLI
 sidebarTitle: "CLI reference"
 description: "Create, preview, and render HTML video compositions from the command line."
@@ -1178,6 +1179,7 @@ Read the HTML and report common mistakes. No browser, so it is fast.
 npx hyperframes lint [dir]
 npx hyperframes lint [dir] --verbose   # include info-level findings
 npx hyperframes lint [dir] --json
+npx hyperframes lint [dir] --studio --json   # Studio's stricter static checks
 ```
 
 ```
@@ -1194,6 +1196,13 @@ attributes. Warnings (`⚠`) are likely problems. Info (`ℹ`) notices are hidde
 unless you pass `--verbose`, which keeps output clean for agents and CI.
 `--lint-verbose`, which `render`, `preview` and `publish` use for the same wish, works here and on `check` too.
 `--json` adds `errorCount`, `warningCount`, `infoCount`, and a `findings` array.
+
+Use `--studio` before handing a project to Studio. It applies Studio's stricter
+static lint rules: issues such as nested layout that needs a sub-composition
+become errors rather than warnings. Any error exits 1 and sets `ok: false` in
+JSON. Without the flag, the existing CLI severity levels stay unchanged.
+This does not open a browser or verify playback; use [`check`](#check) for
+runtime and visual checks too.
 
 The linter catches missing attributes, missing adapter libraries (GSAP, Lottie,
 Three.js), and structural problems. [Troubleshooting](/help)
