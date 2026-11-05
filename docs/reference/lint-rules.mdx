@@ -1,4 +1,5 @@
 ---
+# Modified in this fork: preserve joining-script shaping in spacing guidance.
 title: "Lint rules"
 sidebarTitle: "Lint rules"
 description: "Every lint finding code with its severity, what it catches, and how to fix it."
@@ -426,7 +427,9 @@ Source: `packages/lint/src/rules/gsap.ts`.
 
 **Error.** A GSAP tween animates layout properties (`left`, `top`, `width`, ...), text-reflow properties (`fontSize`, `letterSpacing`, ...) or sets `roundProps`, all of which snap to integer device pixels and stutter under frame capture.
 
-**Fix:** Animate transforms instead: positional properties become `x`/`y`/`scale`; reflow properties need per-character splits or a static final value; remove `roundProps`.
+**Fix:** Animate transforms instead: positional properties become `x`/`y`/`scale`, and `fontSize` becomes `scale`. Remove `roundProps`.
+
+For `letterSpacing` or `wordSpacing`, keep the final spacing static, or animate each glyph's `x` only when per-character elements preserve text shaping. Do not split Arabic or other joining scripts into individual letters. Keep words or lines intact and animate their wrappers as a different effect, preserving reading order. Whole-word motion is not a spacing tween, and uniform scale changes glyph size rather than spacing alone.
 
 ### `gsap_relative_value_second_writer`
 
