@@ -1,4 +1,5 @@
 ---
+# Fork modification (2026-11-05): explain incomplete packet-tail timing and metadata drift.
 title: "Study references with your own agent"
 sidebarTitle: "Own-agent references"
 description: "Prepare a private, frame-indexed reference pack with local FFmpeg, then use your existing agent to author an editable HyperFrames project."
@@ -83,6 +84,12 @@ as a clock for such a source. Use the recorded timestamps or prepare a separate,
 constant-rate working copy before a strict comparison. HDR is flagged too:
 the small PNG previews are not a color-managed HDR fidelity reference. The
 source is never normalized or tone-mapped in place.
+
+Container average-frame-rate metadata can also be misleading when the final
+packet has no duration. The tool flags disagreement with the decoded cadence.
+An unknown final-frame duration remains explicitly estimated, using the previous
+decoded presentation interval when available rather than trusting that average.
+Neither an estimated tail nor a nominal frame-rate tag is exact timing evidence.
 
 ## Inspect the evidence pack
 

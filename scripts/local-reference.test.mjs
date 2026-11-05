@@ -1,3 +1,4 @@
+// Fork modification (2026-11-05): cover missing packet-tail timing and quantized frame-rate metadata.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -120,6 +121,11 @@ test("clock detects variable timing but tolerates container tick quantization", 
     readClock(webm, [frame(0, 33), frame(33, 34), frame(67, 33)]).variable_timing,
     false,
   );
+  assert.equal(
+    readClock(webm, [frame(0, 33), frame(33, 34), frame(67, 33)])
+      .average_rate_disagrees_with_timestamps,
+    false,
+  );
 });
 
 test("clock refuses missing, duplicate, decreasing, or unsafe timestamps", () => {
@@ -138,6 +144,28 @@ test("unknown last-frame duration is explicitly an estimate", () => {
   const clock = readClock(stream, [{ best_effort_timestamp: 0 }]);
   assert.equal(clock.frames[0].duration_ticks, null);
   assert.equal(clock.picture_duration_is_estimate, true);
+  assert.equal(
+    clock.picture_duration_estimate_method,
+    "average frame rate; only one decoded frame",
+  );
+});
+
+test("missing tail uses decoded cadence when container average fps is misleading", () => {
+  const frames = Array.from({ length: 96 }, (_, i) => ({
+    best_effort_timestamp: i * 512,
+    ...(i < 95 ? { duration: 512 } : {}),
+  }));
+  const clock = readClock(
+    { time_base: "1/12288", avg_frame_rate: "2304/95", r_frame_rate: "24/1" },
+    frames,
+  );
+  assert.equal(clock.picture_duration_seconds, 4);
+  assert.equal(clock.picture_duration_ticks, null);
+  assert.equal(clock.picture_duration_is_estimate, true);
+  assert.equal(clock.picture_duration_estimate_method, "previous decoded presentation interval");
+  assert.equal(clock.average_rate_disagrees_with_timestamps, true);
+  assert.equal(clock.average_frame_rate, "2304/95", "source metadata stays unmodified");
+  assert.equal(clock.frames.at(-1).pts, 48640);
 });
 
 test("rejects network/URI inputs before any filesystem or tool invocation", () => {

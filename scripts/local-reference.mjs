@@ -1,3 +1,4 @@
+// Fork modification (2026-11-05): estimate missing tails from decoded cadence and flag misleading average-fps metadata.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -169,10 +170,25 @@ export function readClock(stream, frames) {
   const last = clock.at(-1);
   const durationTicks =
     last.duration_ticks === null ? null : last.pts - first + last.duration_ticks;
+  // Container average_frame_rate can itself be computed from an incomplete
+  // duration. In particular, a missing final packet duration can turn 96
+  // evenly spaced 24 fps frames into 2304/95 fps metadata. Prefer the last
+  // observed presentation interval for an explicitly estimated final frame.
+  const estimatedTailSeconds = deltas.length
+    ? (deltas.at(-1) * timeBase.numerator) / timeBase.denominator
+    : 1 / rate.value;
   const duration =
     durationTicks === null
-      ? last.time_seconds + 1 / rate.value
+      ? last.time_seconds + estimatedTailSeconds
       : (durationTicks * timeBase.numerator) / timeBase.denominator;
+  const observedSpanRate = deltas.length
+    ? ((frames.length - 1) * timeBase.denominator) / ((last.pts - first) * timeBase.numerator)
+    : null;
+  const averageRateMismatch =
+    !variableTiming &&
+    observedSpanRate !== null &&
+    // Allow a tick of endpoint quantization as well as small metadata rounding.
+    Math.abs(rate.value / observedSpanRate - 1) > 0.005 + timeBase.value / last.time_seconds;
   if (!Number.isFinite(duration) || duration <= 0 || duration > MAX_SECONDS + timeBase.value) {
     throw new Error(
       `The decoded picture exceeds ${MAX_SECONDS} seconds; prepare a shorter clip first.`,
@@ -187,6 +203,13 @@ export function readClock(stream, frames) {
     picture_duration_ticks: durationTicks,
     picture_duration_seconds: duration,
     picture_duration_is_estimate: last.duration_ticks === null,
+    picture_duration_estimate_method:
+      durationTicks !== null
+        ? null
+        : deltas.length
+          ? "previous decoded presentation interval"
+          : "average frame rate; only one decoded frame",
+    average_rate_disagrees_with_timestamps: averageRateMismatch,
     variable_timing: variableTiming,
     frames: clock,
   };
@@ -453,6 +476,11 @@ export function prepareReference({
       warnings: [
         "A sampled overview is not complete motion analysis and can miss one-frame events.",
         "Shot-plan fields are intentionally unreviewed until your agent inspects the pixels.",
+        ...(info.clock.average_rate_disagrees_with_timestamps
+          ? [
+              "Average frame-rate metadata disagrees with decoded timestamps. Use the recorded PTS instead of assuming frame / average_fps is the clock.",
+            ]
+          : []),
         ...(info.clock.variable_timing
           ? [
               "Variable timing detected: use recorded PTS, or normalize an authorized working copy before matching a constant-fps composition.",
