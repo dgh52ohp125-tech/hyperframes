@@ -1,0 +1,74 @@
+---
+title: Verify a render receipt
+description: Check that a recorded render still matches its output bytes and current local project inputs.
+---
+
+A path is not proof that a file is still the same render. A later export can
+overwrite an MP4 while leaving the old project history intact. This fork records
+a streamed SHA-256 digest, byte count and local input fingerprint with completed
+file renders, then lets the next person or agent check them without rendering.
+
+## Verify the latest recorded render
+
+Build the fork first, then run:
+
+```bash
+node packages/cli/bin/hyperframes.mjs history verify-render --dir /path/to/project --json
+```
+
+The command is read-only. It does not open a browser, call a provider, start the
+Studio server, create history, or rewrite the receipt. It is also available under
+the `company-agents-only` execution policy.
+
+Exit code 0 means the recorded output bytes and the current local project inputs
+match. Other verification results exit 1 and include a structured error together
+with the `verification` object. Its `outputMatches` and `inputsMatch` fields are
+independent: `null` means evidence is unavailable, not a pass.
+
+## Read the result
+
+- `verified`: output bytes and current local inputs match the receipt.
+- `changed`: output bytes or local inputs differ. Inspect the two match fields to
+  see which part changed. Inputs that changed during capture cannot verify.
+- `missing`: the recorded output file is gone.
+- `not-recorded`: the project has no render receipt.
+- `unverifiable`: an older receipt or a render without an input capture lacks the
+  evidence needed for verification. Re-rendering with this fork records new
+  evidence; the verifier never upgrades old evidence by assumption.
+- `unsupported`: the render produced a directory, such as an image sequence.
+  Directory outputs remain supported by rendering, but this first receipt
+  verifier does not claim to verify them.
+
+For a mismatch, keep the existing output while you decide whether the file was
+replaced or the source was intentionally revised. Record a new version through
+the usual render workflow when needed. The verifier never renders or overwrites
+anything automatically.
+
+## What the receipt proves
+
+The digest identifies the recorded file bytes. The input fingerprint covers the
+local project files included by HyperFrames' existing project-signature rules.
+It does not cover remote assets, environment settings, every toolchain version,
+or every possible external dependency.
+
+Input scanning is a best-effort observation, not an atomic snapshot of the whole
+project. Verify while source files and outputs are not being edited or exported.
+The command reads the output and scans local inputs, so large projects can take
+time even though no rendering occurs.
+
+This is integrity and freshness evidence, not a signature or proof of renderer
+authenticity, visual quality, timing accuracy, audio quality, or browser success.
+A source-art preview is still a source-art preview. Keep static lint, pure seek
+tests, source raster checks, browser checks, engine rendering and human playback
+review as separate evidence. Editing both a receipt and its files can defeat an
+unsigned local receipt, so only accept receipts from a trusted workflow.
+
+Receipt recording remains a post-render step. Failure to record evidence does not
+turn a successfully produced video into a failed render; the render command
+reports its usual post-render warning instead.
+
+## Related topics
+
+- [Render from the command line](/guides/rendering)
+- [Use company agents without integrated generation](/guides/company-agents-only)
+- [Prepare reference evidence](/guides/own-agent-reference)

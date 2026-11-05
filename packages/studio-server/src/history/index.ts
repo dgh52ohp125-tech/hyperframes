@@ -1,3 +1,4 @@
+// Fork modification (2026-11-05): Export read-only render receipt verification.
 export {
   DEFAULT_HISTORY_ROOT,
   openProjectHistory,
@@ -48,6 +49,8 @@ export {
   type ArtifactRecord,
   type VideoState,
   recordRenderSuccess,
+  verifyLatestRender,
+  type RenderVerification,
   type RenderRecord,
 } from "./videoState.js";
 

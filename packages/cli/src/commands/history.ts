@@ -1,3 +1,4 @@
+// Fork modification (2026-11-05): read-only render receipt verification for agent handoffs.
 import { type ArgsDef } from "citty";
 import { defineCommand } from "../utils/defineCommand.js";
 import {
@@ -6,6 +7,8 @@ import {
   HistoryIdError,
   HistoryRefusedError,
   isUncopiedMedia,
+  verifyLatestRender,
+  type RenderVerification,
   type HistoryEntry,
   type HistoryListItem,
   type HistoryResult,
@@ -31,6 +34,7 @@ import {
 import { AmbiguousPreviewServerError } from "../utils/studioSelectionClient.js";
 import { withMeta } from "../utils/updateCheck.js";
 import { jsonFailure } from "../utils/jsonError.js";
+import { resolveProjectOrThrow } from "../utils/project.js";
 
 export const examples: Example[] = [
   [
@@ -42,6 +46,10 @@ export const examples: Example[] = [
     "hyperframes history begin --who claude --label 'Bigger title'",
   ],
   ["Undo your newest entry after a failed check", "hyperframes history undo --who claude"],
+  [
+    "Verify the recorded render against its output and current local inputs",
+    "hyperframes history verify-render --json",
+  ],
 ];
 
 const YOU: HistoryWho = { kind: "person", name: "You" };
@@ -381,6 +389,28 @@ const listEntries = async (args: {
   });
 };
 
+function renderVerificationText(result: RenderVerification): string {
+  switch (result.status) {
+    case "verified":
+      return "Recorded render bytes and local project inputs match.";
+    case "changed": {
+      const changed = [
+        result.outputMatches === false ? "render output" : null,
+        result.inputsMatch === false ? "local project inputs" : null,
+      ].filter(Boolean);
+      return `Changed since the render was recorded: ${changed.join(" and ")}.`;
+    }
+    case "missing":
+      return "The recorded render output is missing.";
+    case "not-recorded":
+      return "No render receipt is recorded for this project.";
+    case "unverifiable":
+      return "The receipt does not contain enough output and input evidence to verify this render.";
+    case "unsupported":
+      return "Directory render outputs are not supported by receipt verification.";
+  }
+}
+
 export default defineCommand({
   meta: { name: "history", description: "List, undo and restore the project's recorded changes" },
   args: {
@@ -390,6 +420,29 @@ export default defineCommand({
     limit: { type: "string", description: "Newest entries to show (default 20)" },
   },
   subCommands: {
+    "verify-render": () =>
+      sub<{ dir?: string; json: boolean }>(
+        "verify-render",
+        "Verify recorded render bytes and local inputs without rendering or changing files",
+        {},
+        async (args) => {
+          const project = resolveProjectOrThrow(args.dir, { requireIndex: false });
+          const verification = await verifyLatestRender(project.dir);
+          const message = renderVerificationText(verification);
+          const ok = verification.status === "verified";
+          setCommandExitCode(ok ? 0 : 1);
+          print(
+            args.json,
+            ok
+              ? { ok: true, verification }
+              : {
+                  ...jsonFailure(`render_receipt_${verification.status}`, message),
+                  verification,
+                },
+            verification.output ? `${message}\n${verification.output}` : message,
+          );
+        },
+      ),
     show: () =>
       sub<{ ref: string; diff: boolean; dir?: string; json: boolean }>(
         "show",

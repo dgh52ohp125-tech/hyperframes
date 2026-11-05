@@ -1,9 +1,21 @@
+// Fork modification (2026-11-05): Capture and verify local render byte receipts.
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, existsSync, readFileSync, renameSync, statSync } from "node:fs";
+import {
+  constants,
+  createReadStream,
+  existsSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  type BigIntStats,
+} from "node:fs";
+import fsPromises from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
-import { replaceFileAtomically } from "@hyperframes/core/atomic-file";
+import { isAtomicTempPath, replaceFileAtomically } from "@hyperframes/core/atomic-file";
+import { isProjectIgnoredDir } from "@hyperframes/core/project-folders";
 import { pinProjectRecord } from "../helpers/safePath.js";
-import { listProjectFiles } from "../helpers/projectSignature.js";
+import { listProjectFiles, STUDIO_SIGNATURE_MANIFEST_PATHS } from "../helpers/projectSignature.js";
+import { isRenderOutput, readRenderOutputs } from "../helpers/renderOutputs.js";
 import { readId } from "./historyId.js";
 import { takeHistoryOwnership } from "./ownerLock.js";
 import {
@@ -69,6 +81,149 @@ export interface RenderRecord {
   completedAt: number;
   output: string;
   status: "completed" | "completed_with_warnings";
+  contentHash?: string;
+  byteCount?: number;
+  outputKind?: "file" | "directory";
+  inputFingerprint?: string;
+  inputScope?: "local-project-files";
+  attribution?: ArtifactRecord["attribution"];
+}
+
+export interface RenderVerification {
+  status: "verified" | "changed" | "missing" | "not-recorded" | "unverifiable" | "unsupported";
+  outputMatches: boolean | null;
+  inputsMatch: boolean | null;
+  renderId?: string;
+  output?: string;
+}
+
+function sameFileVersion(a: BigIntStats, b: BigIntStats): boolean {
+  return (
+    a.dev === b.dev &&
+    a.ino === b.ino &&
+    a.size === b.size &&
+    a.mtimeNs === b.mtimeNs &&
+    a.ctimeNs === b.ctimeNs
+  );
+}
+
+function missingFile(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error.code === "ENOENT" || error.code === "ENOTDIR")
+  );
+}
+
+// Hash an opened descriptor, then check both it and the path for replacement/mutation.
+// Nonblocking open prevents a concurrent replacement with a FIFO from hanging verification.
+async function renderBytes(path: string): Promise<{
+  kind: "file" | "directory" | "unsupported";
+  contentHash?: string;
+  byteCount?: number;
+  stable: boolean;
+  version?: BigIntStats;
+}> {
+  // Directory descriptors are not portable (notably on Windows).
+  const initial = await fsPromises.stat(path, { bigint: true });
+  if (!initial.isFile())
+    return {
+      kind: initial.isDirectory() ? "directory" : "unsupported",
+      stable: true,
+    };
+  const handle = await fsPromises.open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile())
+      return {
+        kind: before.isDirectory() ? "directory" : "unsupported",
+        stable: true,
+      };
+    const hash = createHash("sha256");
+    let byteCount = 0;
+    for await (const chunk of handle.createReadStream({ autoClose: false })) {
+      hash.update(chunk);
+      byteCount += chunk.length;
+    }
+    const after = await handle.stat({ bigint: true });
+    const current = await fsPromises.stat(path, { bigint: true });
+    return {
+      kind: "file",
+      contentHash: hash.digest("hex"),
+      byteCount,
+      version: after,
+      stable:
+        sameFileVersion(initial, before) &&
+        sameFileVersion(before, after) &&
+        sameFileVersion(after, current) &&
+        BigInt(byteCount) === after.size,
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function verificationFingerprint(projectDir: string): Promise<{ fingerprint: string }> {
+  const files = await strictFileHashes(projectDir);
+  return { fingerprint: createHash("sha256").update(JSON.stringify(files)).digest("hex") };
+}
+
+/** Read-only local byte/input comparison; not renderer authenticity or visual validation. */
+export async function verifyLatestRender(projectDir: string): Promise<RenderVerification> {
+  const record = readState(projectDir).renders?.latest;
+  if (!record) return { status: "not-recorded", outputMatches: null, inputsMatch: null };
+  if (typeof record.output !== "string" || !isAbsolute(record.output))
+    throw new Error("Invalid render output path.");
+  const result: RenderVerification = {
+    status: "unverifiable",
+    renderId: record.id,
+    output: record.output,
+    outputMatches: null,
+    inputsMatch: null,
+  };
+  const hasInputs =
+    typeof record.inputFingerprint === "string" &&
+    /^[a-f0-9]{64}$/.test(record.inputFingerprint) &&
+    record.inputScope === "local-project-files";
+  const before = hasInputs ? await verificationFingerprint(projectDir) : null;
+  const bytes = await renderBytes(record.output).catch((error: unknown) => {
+    if (missingFile(error)) return null;
+    throw error;
+  });
+  const after = hasInputs ? await verificationFingerprint(projectDir) : null;
+  if (before && after)
+    result.inputsMatch =
+      before.fingerprint === record.inputFingerprint &&
+      after.fingerprint === record.inputFingerprint;
+  if (!bytes) return { ...result, status: "missing", outputMatches: false };
+  if (bytes.kind !== "file" || record.outputKind === "directory")
+    return { ...result, status: "unsupported" };
+  const current = await fsPromises.stat(record.output, { bigint: true }).catch((error: unknown) => {
+    if (missingFile(error)) return null;
+    throw error;
+  });
+  if (!current) return { ...result, status: "missing", outputMatches: false };
+  if (!bytes.version || !sameFileVersion(bytes.version, current))
+    return { ...result, status: "changed", outputMatches: false };
+  const hasBytes =
+    typeof record.contentHash === "string" &&
+    /^[a-f0-9]{64}$/.test(record.contentHash) &&
+    typeof record.byteCount === "number" &&
+    Number.isSafeInteger(record.byteCount) &&
+    record.byteCount > 0;
+  if (hasBytes)
+    result.outputMatches =
+      bytes.stable &&
+      bytes.contentHash === record.contentHash &&
+      bytes.byteCount === record.byteCount;
+  if (result.outputMatches === false || result.inputsMatch === false) result.status = "changed";
+  else if (
+    result.outputMatches === true &&
+    result.inputsMatch === true &&
+    (record.attribution === "recorded-revision" || record.attribution === "unversioned")
+  )
+    result.status = "verified";
+  return result;
 }
 
 export interface VideoState {
@@ -202,6 +357,43 @@ async function fileHashes(dir: string): Promise<Record<string, string>> {
     const hash = createHash("sha256");
     for await (const chunk of createReadStream(join(dir, path))) hash.update(chunk);
     files[path] = hash.digest("hex");
+  }
+  return files;
+}
+
+// Match the project-signature scope, but fail closed instead of silently skipping I/O errors.
+async function strictFileHashes(dir: string): Promise<Record<string, string>> {
+  const paths: string[] = [];
+  const outputs = readRenderOutputs(dir);
+  async function collect(relativeDir: string): Promise<void> {
+    for (const entry of await fsPromises.readdir(join(dir, relativeDir))) {
+      const path = relativeDir ? `${relativeDir}/${entry}` : entry;
+      if (
+        isProjectIgnoredDir(entry) ||
+        isAtomicTempPath(entry) ||
+        isRenderOutput(dir, join(dir, path), outputs)
+      )
+        continue;
+      const info = await fsPromises.lstat(join(dir, path));
+      if (info.isSymbolicLink()) continue;
+      if (info.isDirectory()) await collect(path);
+      else if (info.isFile()) paths.push(path);
+    }
+  }
+  await collect("");
+  for (const path of STUDIO_SIGNATURE_MANIFEST_PATHS) {
+    const info = await fsPromises.lstat(join(dir, path)).catch((error: unknown) => {
+      if (missingFile(error)) return null;
+      throw error;
+    });
+    if (info?.isFile() && !paths.includes(path)) paths.push(path);
+  }
+  const files: Record<string, string> = {};
+  for (const path of paths.sort((a, b) => a.localeCompare(b))) {
+    const bytes = await renderBytes(join(dir, path));
+    if (bytes.kind !== "file" || !bytes.stable || !bytes.contentHash)
+      throw new Error("Project input changed while capturing its fingerprint.");
+    files[path] = bytes.contentHash;
   }
   return files;
 }
@@ -358,16 +550,24 @@ export async function recordRenderSuccess(
     (outputFile.isFile() && outputFile.size === 0)
   )
     throw new Error("Render output is missing or empty.");
+  const bytes = await renderBytes(output);
+  if (!bytes.stable || (bytes.kind === "file" && !bytes.byteCount))
+    throw new Error("Render output changed while recording its byte receipt.");
+  if (bytes.kind === "unsupported") throw new Error("Unsupported render output type.");
   const after = capture ? await beginArtifactCapture(projectDir) : null;
   const record: RenderRecord = {
     id: randomUUID(),
     completedAt: Date.now(),
     output: resolve(output),
     status,
+    outputKind: bytes.kind,
+    ...(bytes.kind === "file" && { contentHash: bytes.contentHash, byteCount: bytes.byteCount }),
+    ...(capture && { inputFingerprint: capture.fingerprint, inputScope: "local-project-files" }),
   };
   const unchanged = Boolean(capture && after?.fingerprint === capture.fingerprint);
   await updateState(projectDir, (state) => {
     record.revision = unchanged ? knownRevision(state, capture?.revision) : null;
+    if (capture) record.attribution = attributionOf(unchanged, record.revision);
     state.renders = {
       latest: record,
       retainedRevisions: retainRevision(state.renders?.retainedRevisions ?? [], record.revision),

@@ -1,3 +1,4 @@
+// Fork modification (2026-11-05): admit read-only render receipt verification.
 /** Opt-in orchestration policy, not a sandbox for project JavaScript or external tools. */
 export const EXECUTION_POLICY_ENV = "HYPERFRAMES_EXECUTION_POLICY";
 export const COMPANY_AGENTS_ONLY = "company-agents-only";
@@ -95,7 +96,7 @@ const LOCAL_SUBCOMMANDS = {
     "apply",
     "undo",
   ]),
-  history: new Set(["show", "undo", "restore", "peek", "pin", "begin", "end"]),
+  history: new Set(["show", "undo", "restore", "peek", "pin", "begin", "end", "verify-render"]),
   "media-use": new Set(["adopt", "candidates", "reuse", "from", "stats"]),
 };
 

@@ -1,6 +1,7 @@
 ---
 title: Use company agents without integrated generation
 description: Opt in to a restricted local workflow that refuses bundled model and hosted-service routes.
+# Fork modification (2026-11-05): document the read-only render receipt verifier.
 ---
 
 This fork adds an optional `company-agents-only` execution policy. Your agents
@@ -41,7 +42,7 @@ substitute those executables for the built fork.
 - `timeline` at the current directory, plus `move`, `trim`, `split`, `delete`,
   `set`, `duplicate`, `ids`, `apply` and `undo`.
 - `history` at the current directory, plus `show`, `undo`, `restore`, `peek`,
-  `pin`, `begin` and `end`. Root timeline/history flags are limited to help and
+  `pin`, `begin`, `end` and the read-only `verify-render`. Root timeline/history flags are limited to help and
   JSON output; put operation-specific flags after the named subcommand.
 - `media-use adopt`, `candidates`, `reuse`, `from` and `stats`. Ingestion accepts
   a supplied local filesystem path, not a URL. The direct resolver also allows
@@ -99,4 +100,4 @@ on the capabilities of the chosen executor.
 
 - [Prepare reference evidence with your own agents](/guides/own-agent-reference)
 - [Render from the command line](/guides/rendering)
-- [CLI reference](/packages/cli)
+- [Verify a render receipt](/guides/render-receipts)

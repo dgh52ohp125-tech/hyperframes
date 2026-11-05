@@ -1,3 +1,4 @@
+// Fork modification (2026-11-05): cover the read-only render receipt route.
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { readFileSync } from "node:fs";
@@ -63,6 +64,7 @@ const allowed = [
   ["timeline", "move", "clip", "--to", "1"],
   ["history"],
   ["history", "begin", "--who", "company-agent"],
+  ["history", "verify-render", "--json"],
   ["media-use", "from", "asset.png"],
   ["media-use", "adopt"],
   ["media-use", "candidates"],
