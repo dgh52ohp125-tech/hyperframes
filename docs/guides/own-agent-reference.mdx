@@ -1,5 +1,5 @@
 ---
-# Fork modification (2026-11-05): document decoded timing and dense review windows separate from cuts.
+# Fork modification (2026-11-05): document decoded timing, dense review windows, and cropped detail evidence.
 title: "Study references with your own agent"
 sidebarTitle: "Own-agent references"
 description: "Prepare a private, frame-indexed reference pack with local FFmpeg, then use your existing agent to author an editable HyperFrames project."
@@ -118,12 +118,51 @@ An unknown final-frame duration remains explicitly estimated, using the previous
 decoded presentation interval when available rather than trusting that average.
 Neither an estimated tail nor a nominal frame-rate tag is exact timing evidence.
 
+## Inspect small details before downscaling
+
+Use `--crop left:top:right:bottom` to inspect a small label, facial pose, or
+contact point that becomes hard to read in the whole-frame preview. The four
+values are **percentage edges**, not pixels, width/height, or times. For example,
+`45:20:60:40` selects the region between 45% and 60% across the displayed frame,
+and between 20% and 40% down it:
+
+```bash
+node scripts/local-reference.mjs ./reference.mp4 \
+  --out ../private-detail \
+  --window 80:96 \
+  --samples 20 \
+  --crop 45:20:60:40
+```
+
+Cropping happens after automatic orientation correction and before the preview
+is reduced to `--width`. This preserves more of the region's existing detail;
+it does not invent pixels, recover hidden layers, or improve the source's
+resolution. Sample aspect ratio is still corrected, and both output dimensions
+remain bounded by `--width`. The crop is fixed across all selected frames, not
+an object tracker. Dense windows and cuts retain the same frame indexes and PTS.
+
+In the CLI, each edge accepts 0–100 with at most three decimal places. Left must be smaller
+than right and top smaller than bottom. The tool computes each raster edge as
+`floor(size * percentage / 100)` after autorotation, with exclusive right/bottom
+edges and no chroma-subsampling alignment of the crop. A region that rounds to
+zero pixels fails without publishing a partial pack. Pixel aspect correction
+occurs after cropping, so percentages cover the displayed frame consistently
+without requiring knowledge of the encoded rotation or non-square pixel ratio.
+
+The manifest, shot plan, contact sheet, and agent brief identify detail views.
+Keep a separate uncropped pack for the full composition and surrounding motion;
+a crop can hide other elements, collisions, and off-screen arrivals. It also
+can exclude source watermarks or notices: retain attribution and rights records,
+and do not treat a detail view as a full-frame reproduction or public deliverable.
+`--crop 0:0:100:100` selects the complete frame. Omitting the option keeps the
+existing full-frame behavior.
+
 ## Inspect the evidence pack
 
 The output contains:
 
 - `manifest.json`: source SHA-256, basename and size, media characteristics,
-  exact clock, supplied cuts, optional dense review window, sampled-frame paths,
+  exact clock, supplied cuts, optional dense review window and detail-crop bounds, sampled-frame paths,
   and limitations. Absolute
   source paths, arbitrary media tags, and authentication state are not included.
 - `frames/f000083.png`: sampled pixels named by decoded frame index. Previews
@@ -192,7 +231,8 @@ node --test scripts/local-reference.test.mjs
 
 The tests generate their own tiny geometric/color clips. They verify fractional
 frame rates, cut-neighbor pixels, dense windows preserving a one-frame flash
-without inventing cuts, variable timing, rotation, non-square pixels,
+without inventing cuts, detail crops with odd pixel bounds, variable timing,
+rotation, non-square pixels,
 output protection, and rejection of network inputs and disguised playlists.
 Media integration tests are explicitly skipped if FFmpeg or ffprobe is missing;
 that is not a completed media-tool validation.
