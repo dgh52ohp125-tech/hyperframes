@@ -1,4 +1,4 @@
-// Fork modification (2026-11-05): cover missing packet-tail timing and quantized frame-rate metadata.
+// Fork modification (2026-11-05): cover decoded timing and dense review windows separate from cuts.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -14,7 +14,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { parseRational, planSamples, prepareReference, readClock } from "./local-reference.mjs";
+import {
+  parseFrameWindow,
+  parseRational,
+  planSamples,
+  prepareReference,
+  readClock,
+} from "./local-reference.mjs";
 
 const stream = { time_base: "1/30000", avg_frame_rate: "30000/1001", r_frame_rate: "30000/1001" };
 const frame = (pts, duration = 1001) => ({ best_effort_timestamp: pts, duration });
@@ -89,6 +95,63 @@ test("sampling rejects out-of-range cuts and resource budgets", () => {
     assert.throws(() => planSamples(15, 12, cuts), /Cut frame/);
   for (const count of [0, 1, 65, Infinity]) assert.throws(() => planSamples(15, count), /samples/);
   assert.throws(() => planSamples(18_001, 12), /Frame count/);
+});
+
+test("dense review windows parse strictly as half-open decoded-frame intervals", () => {
+  assert.equal(parseFrameWindow(undefined), undefined);
+  assert.deepEqual(parseFrameWindow("80:96"), { start_frame: 80, end_frame_exclusive: 96 });
+  for (const value of [
+    "",
+    "1",
+    "1,2",
+    "1:2:3",
+    "1.5:3",
+    "-1:3",
+    " 1:3",
+    "1:3 ",
+    "3:3",
+    "4:3",
+    "0:18001",
+    "0:9007199254740992",
+  ])
+    assert.throws(() => parseFrameWindow(value), /window|Window/);
+});
+
+test("dense review preserves every requested frame, cuts, and clip endpoints", () => {
+  const window = parseFrameWindow("7:10");
+  assert.deepEqual(planSamples(15, 6, [], window), [0, 3, 7, 8, 9, 14]);
+  assert.deepEqual(planSamples(15, 8, [8, 8, 5], window), [0, 4, 5, 6, 7, 8, 9, 14]);
+  assert.deepEqual(planSamples(1, 2, [], parseFrameWindow("0:1")), [0]);
+  assert.deepEqual(planSamples(4, 4, [], parseFrameWindow("0:4")), [0, 1, 2, 3]);
+  assert.throws(() => planSamples(15, 4, [], window), /need 5 samples/);
+  assert.throws(() => planSamples(15, 7, [5], window), /need 8 samples/);
+  assert.throws(() => planSamples(100, 64, [], parseFrameWindow("0:65")), /need 66 samples/);
+  for (const value of [
+    null,
+    [],
+    {},
+    { start_frame: -1, end_frame_exclusive: 2 },
+    { start_frame: 3, end_frame_exclusive: 3 },
+    { start_frame: 1, end_frame_exclusive: 16 },
+  ])
+    assert.throws(() => planSamples(15, 12, [], value), /window|Window/);
+});
+
+test("dense window sampling invariants across positions and budgets", () => {
+  for (let frameCount = 1; frameCount < 30; frameCount++) {
+    for (let start = 0; start < frameCount; start++) {
+      const end = Math.min(frameCount, start + 5);
+      const samples = planSamples(frameCount, 10, [], {
+        start_frame: start,
+        end_frame_exclusive: end,
+      });
+      assert.equal(samples.length, Math.min(frameCount, 10));
+      assert.equal(samples[0], 0);
+      assert.equal(samples.at(-1), frameCount - 1);
+      assert.equal(new Set(samples).size, samples.length);
+      for (let frame = start; frame < end; frame++) assert.ok(samples.includes(frame));
+    }
+  }
 });
 
 test("sampling invariants across frame counts and budgets", () => {
@@ -202,12 +265,89 @@ test("CLI help and argument errors require no media tools", () => {
     execFileSync(process.execPath, [script, "--help"], { encoding: "utf8" }),
     /No source copy/,
   );
-  for (const args of [[], ["source.mp4", "--cuts", "1,,2"], ["source.mp4", "--unknown"]]) {
+  for (const args of [
+    [],
+    ["source.mp4", "--cuts", "1,,2"],
+    ["source.mp4", "--window", "2:1"],
+    ["source.mp4", "--window", "1:2:3"],
+    ["source.mp4", "--unknown"],
+  ]) {
     const result = spawnSync(process.execPath, [script, ...args], { encoding: "utf8" });
     assert.equal(result.status, 1);
     assert.equal(typeof JSON.parse(result.stderr).error, "string");
   }
 });
+
+test(
+  "CLI dense review captures a one-frame event without creating false shot cuts",
+  integration,
+  (t) => {
+    const directory = fixture(t);
+    const source = join(directory, "flash.mp4");
+    makeVideo(source, ["drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='eq(n,8)'"]);
+    const original = createHash("sha256").update(readFileSync(source)).digest("hex");
+    assert.ok(!planSamples(15, 4).includes(8), "sparse overview misses this brief event");
+    const out = join(directory, "dense");
+    const result = spawnSync(
+      process.execPath,
+      [
+        join(import.meta.dirname, "local-reference.mjs"),
+        source,
+        "--out",
+        out,
+        "--window",
+        "7:10",
+        "--samples",
+        "6",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const manifest = json(join(out, "manifest.json"));
+    assert.equal(JSON.parse(result.stdout).frames, 6);
+    assert.deepEqual(
+      manifest.samples.map((sample) => sample.frame),
+      [0, 3, 7, 8, 9, 14],
+    );
+    assert.deepEqual(manifest.cuts.frames, []);
+    assert.deepEqual(manifest.review_window, {
+      start_frame: 7,
+      end_frame_exclusive: 10,
+      coverage: "every decoded frame; not a shot boundary declaration",
+    });
+    const shots = json(join(out, "shot-plan.json")).shots;
+    assert.equal(shots.length, 1);
+    assert.deepEqual([shots[0].start_frame, shots[0].end_frame_exclusive], [0, 15]);
+    assert.match(readFileSync(join(out, "contact-sheet.html"), "utf8"), /\[7, 10\)/);
+    for (const frame of [7, 8, 9]) {
+      const sample = manifest.samples.find((item) => item.frame === frame);
+      assert.equal(sample.pts, frame * 1001);
+      const [r, g, b] = ffmpeg([
+        "-i",
+        join(out, sample.file),
+        "-frames:v",
+        "1",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "pipe:1",
+      ]);
+      if (frame === 8)
+        assert.ok(r > 240 && g > 240 && b > 240, "the one-frame white event is preserved");
+      else assert.ok(r < 10 && g < 10 && b > 240, "both blue neighbors are preserved");
+    }
+    assert.equal(createHash("sha256").update(readFileSync(source)).digest("hex"), original);
+    for (const window of [parseFrameWindow("7:16"), parseFrameWindow("0:15")]) {
+      const rejected = join(directory, "rejected");
+      assert.throws(
+        () => prepareReference({ source, out: rejected, samples: 6, window }),
+        /Window|samples/,
+      );
+      assert.equal(existsSync(rejected), false);
+    }
+  },
+);
 
 test(
   "prepares exact fractional-fps evidence, shot plan, and private contact sheet",
@@ -274,6 +414,38 @@ test(
   },
 );
 
+test("dense windows preserve genuine cut-defined shots in extracted evidence", integration, (t) => {
+  const directory = fixture(t);
+  const source = join(directory, "three-shots.mp4");
+  makeVideo(source);
+  const out = join(directory, "dense-with-cuts");
+  prepareReference({
+    source,
+    out,
+    samples: 10,
+    cuts: [10, 5, 10],
+    window: parseFrameWindow("7:10"),
+  });
+  const manifest = json(join(out, "manifest.json"));
+  assert.deepEqual(manifest.cuts.frames, [5, 10]);
+  assert.deepEqual(
+    manifest.samples.map((sample) => sample.frame),
+    [0, 4, 5, 6, 7, 8, 9, 10, 11, 14],
+  );
+  assert.deepEqual(
+    json(join(out, "shot-plan.json")).shots.map((shot) => ({
+      interval: [shot.start_frame, shot.end_frame_exclusive],
+      evidence: shot.evidence_frames,
+    })),
+    [
+      { interval: [0, 5], evidence: [0, 4] },
+      { interval: [5, 10], evidence: [5, 6, 7, 8, 9] },
+      { interval: [10, 15], evidence: [10, 11, 14] },
+    ],
+  );
+  for (const sample of manifest.samples) assert.ok(existsSync(join(out, sample.file)));
+});
+
 test("variable-fps evidence uses actual timestamps and emits a warning", integration, (t) => {
   const directory = fixture(t);
   const source = join(directory, "vfr.mkv");
@@ -293,7 +465,7 @@ test("variable-fps evidence uses actual timestamps and emits a warning", integra
     source,
   ]);
   const out = join(directory, "evidence");
-  prepareReference({ source, out, samples: 4 });
+  prepareReference({ source, out, samples: 4, window: parseFrameWindow("1:3") });
   const manifest = json(join(out, "manifest.json"));
   assert.equal(manifest.clock.variable_timing, true);
   assert.deepEqual(
