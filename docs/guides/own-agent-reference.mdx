@@ -1,5 +1,5 @@
 ---
-# Fork modification (2026-11-05): explain incomplete packet-tail timing and metadata drift.
+# Fork modification (2026-11-05): document decoded timing and dense review windows separate from cuts.
 title: "Study references with your own agent"
 sidebarTitle: "Own-agent references"
 description: "Prepare a private, frame-indexed reference pack with local FFmpeg, then use your existing agent to author an editable HyperFrames project."
@@ -79,6 +79,33 @@ contains one unreviewed interval. A sampled overview can miss a one-frame flash,
 a caption switch, or an entire short shot. Inspect such windows separately at
 their native frame rate before authoring.
 
+### Inspect a brief transition without inventing cuts
+
+Use `--window start:end` to include **every decoded frame** in a short interval.
+The start is inclusive and the end is exclusive, so `80:96` means frames 80–95,
+not seconds. Unlike `--cuts`, a window does not split the shot plan or assert
+that a new shot begins there:
+
+```bash
+node scripts/local-reference.mjs ./reference.mp4 \
+  --out ../private-transition \
+  --window 80:96 \
+  --samples 20
+```
+
+The tool still preserves the first and last clip frames and all supplied cut
+neighbors. Every required frame shares the `--samples` budget (maximum 64);
+if they do not fit, it fails before publishing a pack rather than dropping
+frames. Raise the budget or choose a shorter window. Remaining slots sample
+the rest of the clip. For longer transitions, prepare successive windows in
+separate new output directories; the source is never trimmed or rewritten.
+
+`manifest.json` records the exact `review_window`, and the contact sheet labels
+its scope. Full decoded-frame coverage within that interval is not full-speed
+playback, an automatic cut detector, or a reconstruction-quality verdict. Frames
+outside it can still contain unsampled events. The same frame-index semantics
+apply to variable-rate media; each frame keeps its actual PTS.
+
 Variable timing is flagged from decoded timestamps. Do not use `frame / fps`
 as a clock for such a source. Use the recorded timestamps or prepare a separate,
 constant-rate working copy before a strict comparison. HDR is flagged too:
@@ -96,7 +123,8 @@ Neither an estimated tail nor a nominal frame-rate tag is exact timing evidence.
 The output contains:
 
 - `manifest.json`: source SHA-256, basename and size, media characteristics,
-  exact clock, supplied cuts, sampled-frame paths, and limitations. Absolute
+  exact clock, supplied cuts, optional dense review window, sampled-frame paths,
+  and limitations. Absolute
   source paths, arbitrary media tags, and authentication state are not included.
 - `frames/f000083.png`: sampled pixels named by decoded frame index. Previews
   respect rotation and sample aspect ratio; both dimensions are bounded by
@@ -163,7 +191,8 @@ node --test scripts/local-reference.test.mjs
 ```
 
 The tests generate their own tiny geometric/color clips. They verify fractional
-frame rates, cut-neighbor pixels, variable timing, rotation, non-square pixels,
+frame rates, cut-neighbor pixels, dense windows preserving a one-frame flash
+without inventing cuts, variable timing, rotation, non-square pixels,
 output protection, and rejection of network inputs and disguised playlists.
 Media integration tests are explicitly skipped if FFmpeg or ffprobe is missing;
 that is not a completed media-tool validation.
