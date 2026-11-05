@@ -1,3 +1,5 @@
+// Fork modification (2026-11-05): guard direct API model execution.
+import { integratedExecutionDenial } from "../media-use/lib/execution-policy.mjs";
 import { existsSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { transcribeWithHeygen } from "../heygen/transcribe.js";
@@ -113,6 +115,8 @@ export type TranscribeResult =
   | { kind: "exported"; format: CaptionFormat; wordCount: number; outputPath: string };
 
 export type TranscribeErrorCode =
+  | "policy_denied"
+  | "policy_invalid"
   | "input_not_found"
   | "invalid_option"
   | "invalid_timeout"
@@ -168,6 +172,8 @@ interface CancellationScope {
 }
 
 export async function runTranscribe(options: TranscribeRequest): Promise<TranscribeResult> {
+  const denial = integratedExecutionDenial("transcription API");
+  if (denial) throw new TranscribeError(denial.code, denial.message);
   if (options.signal?.aborted) {
     throw new TranscribeError("cancelled", "Transcription cancelled", {
       cause: options.signal.reason,

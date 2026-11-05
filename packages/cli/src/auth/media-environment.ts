@@ -1,3 +1,5 @@
+// Fork modification (2026-11-05): skip vendor credentials for company-agent local operations.
+import { isCompanyAgentsOnly, localMediaEnvironment } from "../media-use/lib/execution-policy.mjs";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +14,7 @@ const MIN_HELPER_TOKEN_LIFETIME_MS = 10 * 60 * 1000;
 
 /** The Go CLI accepts OAuth through a credential file, but cannot refresh a HyperFrames grant. */
 export async function withMediaAuthEnvironment<T>(run: (env: NodeJS.ProcessEnv) => T): Promise<T> {
+  if (isCompanyAgentsOnly()) return await run(localMediaEnvironment());
   let credential;
   try {
     credential = await tryResolveCredential();

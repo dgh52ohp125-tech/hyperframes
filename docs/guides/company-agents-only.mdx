@@ -1,0 +1,102 @@
+---
+title: Use company agents without integrated generation
+description: Opt in to a restricted local workflow that refuses bundled model and hosted-service routes.
+---
+
+This fork adds an optional `company-agents-only` execution policy. Your agents
+author the composition and supply its assets. HyperFrames performs the reviewed
+local editing, measurement and rendering steps without choosing an integrated
+generation provider for you.
+
+The default is unchanged. The policy is active only when the launching process
+sets `HYPERFRAMES_EXECUTION_POLICY=company-agents-only`. An unknown nonempty value
+fails with `policy_invalid`, rather than silently returning to unrestricted mode.
+
+## Run the fork with the policy enabled
+
+Build this fork using the repository's normal `bun install` and `bun run build`
+workflow first. Then, from the fork checkout, run the built entry point explicitly:
+
+```bash
+HYPERFRAMES_EXECUTION_POLICY=company-agents-only node packages/cli/dist/cli.js lint /path/to/project
+HYPERFRAMES_EXECUTION_POLICY=company-agents-only node packages/cli/dist/cli.js audio /path/to/audio.wav --quality fast --json
+HYPERFRAMES_EXECUTION_POLICY=company-agents-only node packages/cli/dist/cli.js render /path/to/project --output /path/to/output.mp4
+```
+
+Use your shell's environment-variable syntax on other platforms. Set the variable
+in the launching environment, not the project's `.env`: project settings cannot
+enable or downgrade this policy. Keep the variable inherited by subprocesses.
+
+An upstream `npx hyperframes`, a previously installed CLI, or an old packaged app
+does not acquire this fork's policy merely because the variable is set. Do not
+substitute those executables for the built fork.
+
+## Available operations
+
+- Local `lint`, `check`, native `render`, `snapshot`, `info`, `compositions` and `beats`.
+- `audio` with exactly one explicit `--quality fast` before any `--` separator; provider pins and `--read`
+  are excluded in this first version.
+- `measure probe`, `cuts`, `events`, `frames`, `extract`, `curve`, `energy`, `ink`,
+  `look` and `sync`. `events --map` is excluded because it can select beat models.
+- `timeline` at the current directory, plus `move`, `trim`, `split`, `delete`,
+  `set`, `duplicate`, `ids`, `apply` and `undo`.
+- `history` at the current directory, plus `show`, `undo`, `restore`, `peek`,
+  `pin`, `begin` and `end`. Root timeline/history flags are limited to help and
+  JSON output; put operation-specific flags after the named subcommand.
+- `media-use adopt`, `candidates`, `reuse`, `from` and `stats`. Ingestion accepts
+  a supplied local filesystem path, not a URL. The direct resolver also allows
+  its equivalent local inspection flags, including `--dry-run`.
+
+The media registry permits only its reviewed deterministic local providers:
+`bundled.sfx`, `design_spec`, `color_grade.local` and `cube_lut.local`. Unknown,
+network and paid providers are denied, including explicit overrides. A permitted
+local provider may satisfy a registry request after blocked providers are skipped;
+otherwise the request fails without model fallback. Automatic `media-use resolve`
+is intentionally excluded: prepare assets through your agents and import them.
+
+File edits, deletes and history restores still require the permissions of your
+agent workflow. The execution policy does not authorize those actions by itself.
+
+## What is refused
+
+Unreviewed command routes fail closed. This includes integrated generation,
+transcription, background removal, hosted reverse workflows, cloud operations,
+authentication, billing, model discovery, preview/Studio, catalog search and `diff`.
+Some excluded commands contain useful local operations, but their full paths have
+not been admitted to this policy.
+
+The policy also rejects `snapshot --describe`, `measure face` and `render --docker`.
+Docker is excluded because the existing image installs an upstream CLI without
+these guards. Forbidden flag spellings are rejected even when their supplied value
+looks false. Ordinary local render output and open-source tools are not unlocked
+Pro features; the policy bypasses no entitlement checks.
+
+CLI and direct-resolver refusals return exit code 2. With `--json`, the result is
+an `{ ok: false, error: { code, message, hint } }` envelope. Codes are `policy_denied`
+and `policy_invalid`. Review the operation or supply the needed asset; do not
+silently retry the same work through a different provider or an older CLI.
+
+## Covered entry points and limits
+
+Guards cover this fork's CLI routing, direct media resolver and registry capability
+calls, the exported transcription and background-removal APIs, and the standalone
+media-use audio, HeyGen TTS/voice, transcription, evaluation and Lyria scripts.
+The two exported APIs preserve their typed error classes with the new policy codes.
+Local media operations skip HeyGen credential resolution and refresh and do not
+pass HeyGen environment credentials to their helper. Telemetry and automatic
+update/install checks are disabled for the policy-enabled CLI process. The packaged
+executable does not use background warm-check workers in this mode; saved user
+preferences are not changed.
+
+This is an orchestration guard, not an operating-system or network sandbox. It does
+not police arbitrary composition JavaScript, asset URLs, external executables,
+modified code, direct imports of internal leaf helpers, older CLIs, or independently
+launched applications. Trusted compositions and the executor's normal security and
+permission controls remain necessary. Browser startup and rendering still depend
+on the capabilities of the chosen executor.
+
+## Related topics
+
+- [Prepare reference evidence with your own agents](/guides/own-agent-reference)
+- [Render from the command line](/guides/rendering)
+- [CLI reference](/packages/cli)

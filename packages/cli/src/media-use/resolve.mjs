@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+// Fork modification (2026-11-05): restrict direct resolver runs before discovery or mutation.
+import { assertLocalMediaOperationAllowed, policyFailure } from "./lib/execution-policy.mjs";
+
 import { spawnSync } from "node:child_process";
 import { existsSync, statSync, writeFileSync, renameSync, rmSync, realpathSync } from "node:fs";
 import { resolve, join, extname, basename, relative, isAbsolute, sep } from "node:path";
@@ -121,6 +124,15 @@ const { values: args } = parseArgs({
   },
   strict: true,
 });
+
+try {
+  assertLocalMediaOperationAllowed(args);
+} catch (error) {
+  const failure = policyFailure(error);
+  if (args.json) console.log(JSON.stringify(failure));
+  else console.error(`${failure.error.code}: ${failure.error.message}`);
+  process.exit(2);
+}
 
 if (args.help) {
   console.log(`media-use resolve — turn a media need into a frozen local file

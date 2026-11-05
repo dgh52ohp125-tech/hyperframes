@@ -1,9 +1,14 @@
+// Fork modification (2026-11-05): keep standalone execution-policy guards in sync.
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const skillModuleCopies = [
+  [
+    "packages/cli/src/media-use/lib/execution-policy.mjs",
+    ["skills/media-use/scripts/lib/execution-policy.mjs"],
+  ],
   [
     "packages/cli/src/media-use/lib/media-fetch.mjs",
     ["skills/media-use/scripts/lib/media-fetch.mjs"],

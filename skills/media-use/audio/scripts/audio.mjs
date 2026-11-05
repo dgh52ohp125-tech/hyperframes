@@ -1,4 +1,15 @@
 #!/usr/bin/env node
+
+// Fork modification (2026-11-05): stop standalone integrated execution before work starts.
+import { integratedExecutionDenial, policyFailure } from "../../scripts/lib/execution-policy.mjs";
+const executionDenial = integratedExecutionDenial("standalone audio generation");
+if (executionDenial) {
+  const failure = JSON.stringify(policyFailure(executionDenial));
+  if (process.argv.includes("--json")) console.log(failure);
+  else console.error(failure);
+  process.exit(2);
+}
+
 // audio.mjs — the shared HyperFrames audio engine. ONE implementation of TTS +
 // BGM + SFX. Callers do NOT vendor a copy: they write a neutral
 // `audio_request.json` (mapping their storyboard/scenes into it) and call:

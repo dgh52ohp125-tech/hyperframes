@@ -1,4 +1,15 @@
 #!/usr/bin/env node
+
+// Fork modification (2026-11-05): stop standalone integrated execution before work starts.
+import { integratedExecutionDenial, policyFailure } from "../../scripts/lib/execution-policy.mjs";
+const executionDenial = integratedExecutionDenial("standalone HeyGen TTS");
+if (executionDenial) {
+  const failure = JSON.stringify(policyFailure(executionDenial));
+  if (process.argv.includes("--json")) console.log(failure);
+  else console.error(failure);
+  process.exit(2);
+}
+
 // Self-contained HeyGen TTS — single text in → one wav (+ optional words JSON)
 // out. A thin CLI over lib/tts.mjs (the same code the audio engine uses), so the
 // HeyGen REST call, starfish voice pick, mp3→wav transcode, and word-timestamp

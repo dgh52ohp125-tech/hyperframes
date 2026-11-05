@@ -1,3 +1,5 @@
+// Fork modification (2026-11-05): recheck parsed audio options before loading targets/providers.
+import { assertLocalAudioAllowed, policyFailure } from "../media-use/lib/execution-policy.mjs";
 import { join, resolve } from "node:path";
 import { defineCommand } from "../utils/defineCommand.js";
 import type {
@@ -266,6 +268,15 @@ export default defineCommand({
   },
   async run({ args }) {
     const flags = args as unknown as AudioFlags;
+    try {
+      assertLocalAudioAllowed(flags);
+    } catch (error) {
+      const failure = policyFailure(error);
+      throw new CliUsageError(failure.error.message, {
+        code: failure.error.code,
+        hint: failure.error.hint,
+      });
+    }
     const files = args._.map(String);
     if (flags.read) return read(files, flags);
     if (flags.transcript) throw new CliUsageError("--transcript only works with --read");

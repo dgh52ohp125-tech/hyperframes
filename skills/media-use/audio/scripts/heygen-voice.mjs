@@ -1,4 +1,15 @@
 #!/usr/bin/env node
+
+// Fork modification (2026-11-05): stop standalone integrated execution before work starts.
+import { integratedExecutionDenial, policyFailure } from "../../scripts/lib/execution-policy.mjs";
+const executionDenial = integratedExecutionDenial("standalone HeyGen voice");
+if (executionDenial) {
+  const failure = JSON.stringify(policyFailure(executionDenial));
+  if (process.argv.includes("--json")) console.log(failure);
+  else console.error(failure);
+  process.exit(2);
+}
+
 // HeyGen voice clones: `clone <audio> --name <n>`, `delete <voice_id>`, `list --prefix <p>` (references/tts.md).
 // The clone id works as `heygen-tts.mjs --voice <id>`. A refusal prints HeyGen's own message and exits 1.
 // Auth: same resolver as heygen-tts.mjs (lib/heygen.mjs).

@@ -1,3 +1,4 @@
+// Fork modification (2026-11-05): enforce opt-in policy on dispatch and exposed capabilities.
 // Provider registry — the v2 contract.
 //
 // Each media type maps to an ORDERED list of provider entries. Providers are
@@ -34,15 +35,34 @@ import { ltxVideoGenerate } from "./ltx-video-provider.mjs";
 import { localTtsGenerate } from "./tts-local-provider.mjs";
 import { codexImageGenerate } from "./codex-provider.mjs";
 import { mfluxImageGenerate } from "./mflux-provider.mjs";
+import {
+  assertProviderAllowed,
+  executionPolicy,
+  ExecutionPolicyError,
+} from "./execution-policy.mjs";
 
 // Provider markers: `network` = hits a remote service (skipped by --local-only).
 // `paid` = may cost wallet credits after any OAuth/web-plan free allowance
 // (documentation for the agent's cost judgment, X4: agent-initiated paid should
 // confirm). HeyGen catalog SEARCH is free; HeyGen TTS is free for eligible
 // OAuth CLI users up to the monthly allowance, then follows the user's billing.
-const A = (name, caps) => ({ name, ...caps }); // local, free
-const N = (name, caps) => ({ name, network: true, ...caps }); // remote, free
-const P = (name, caps) => ({ name, network: true, paid: true, ...caps }); // remote, paid
+function guardedProvider(name, caps, markers = {}) {
+  const provider = { name, ...markers, ...caps };
+  // Keep the original identity even if a legacy caller edits exposed metadata.
+  const policyDescriptor = { name, network: provider.network, paid: provider.paid };
+  for (const capability of ["search", "generate", "process"]) {
+    const run = provider[capability];
+    if (typeof run !== "function") continue;
+    provider[capability] = (...args) => {
+      assertProviderAllowed(policyDescriptor);
+      return run(...args);
+    };
+  }
+  return provider;
+}
+const A = (name, caps) => guardedProvider(name, caps); // local, free
+const N = (name, caps) => guardedProvider(name, caps, { network: true }); // remote, free
+const P = (name, caps) => guardedProvider(name, caps, { network: true, paid: true }); // remote, paid
 
 // heygen-CLI first. All remote providers are skipped by --local-only.
 const REGISTRY = {
@@ -197,15 +217,25 @@ export function getProvider(type) {
  * free-first default.
  */
 export async function runProviders(providers, capability, intent, ctx) {
+  executionPolicy();
   const want = ctx?.provider;
+  let deniedProvider;
   for (const p of providers) {
     if (want && p.name !== want && !p.name.startsWith(`${want}.`)) continue;
+    try {
+      assertProviderAllowed(p);
+    } catch (error) {
+      if (!(error instanceof ExecutionPolicyError) || error.code !== "policy_denied") throw error;
+      deniedProvider = error;
+      continue;
+    }
     if (p.network && ctx?.localOnly) continue; // --local-only wins, even over --provider
     const fn = p[capability];
     if (typeof fn !== "function") continue;
     const res = await fn(intent, ctx);
     if (res) return res;
   }
+  if (deniedProvider) throw deniedProvider;
   return null;
 }
 

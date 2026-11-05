@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+// Fork modification (2026-11-05): opt-in company-agent execution preflight.
+import { assertCompanyCommandAllowed, policyFailure } from "./media-use/lib/execution-policy.mjs";
+
 // ── EPIPE suppression (must run before ANY stdout/stderr write) ────────────
 // When the CLI runs inside a piped agent environment (Claude Code, Codex,
 // Cursor, etc.), the reader may close the pipe before we finish writing.
@@ -55,6 +58,14 @@ if (argv[0] === "help") {
   argv = process.argv.slice(2);
 }
 const commandArg = argv[0];
+try {
+  assertCompanyCommandAllowed(argv);
+} catch (error) {
+  const failure = policyFailure(error);
+  if (argv.includes("--json")) console.log(JSON.stringify(failure));
+  else console.error(`${failure.error.code}: ${failure.error.message}\n${failure.error.hint}`);
+  process.exit(2);
+}
 const rootVersionRequested =
   commandArg === "--version" ||
   commandArg === "-V" ||

@@ -1,3 +1,5 @@
+// Fork modification (2026-11-05): guard direct API model execution.
+import { integratedExecutionDenial } from "../media-use/lib/execution-policy.mjs";
 import { resolve } from "node:path";
 import { DEVICES, isDevice, type Device } from "../background-removal/manager.js";
 import {
@@ -28,7 +30,11 @@ export interface RemoveBackgroundOptions {
   onProgress?: (event: RemoveBackgroundProgress) => void;
 }
 
-export type RemoveBackgroundErrorCode = "invalid_option" | "failed";
+export type RemoveBackgroundErrorCode =
+  | "invalid_option"
+  | "failed"
+  | "policy_denied"
+  | "policy_invalid";
 
 export class RemoveBackgroundError extends Error {
   readonly code: RemoveBackgroundErrorCode;
@@ -43,6 +49,8 @@ export class RemoveBackgroundError extends Error {
 export async function removeBackground(
   options: RemoveBackgroundOptions,
 ): Promise<RemoveBackgroundResult> {
+  const denial = integratedExecutionDenial("background-removal API");
+  if (denial) throw new RemoveBackgroundError(denial.code, denial.message);
   // Typed callers cannot get these wrong; plain JavaScript callers can.
   const { device, quality } = options;
   if (device !== undefined && !isDevice(device)) {

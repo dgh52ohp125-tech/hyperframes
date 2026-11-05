@@ -1,5 +1,15 @@
 #!/usr/bin/env node
 
+// Fork modification (2026-11-05): stop standalone integrated execution before work starts.
+import { integratedExecutionDenial, policyFailure } from "./lib/execution-policy.mjs";
+const executionDenial = integratedExecutionDenial("standalone model evaluation");
+if (executionDenial) {
+  const failure = JSON.stringify(policyFailure(executionDenial));
+  if (process.argv.includes("--json")) console.log(failure);
+  else console.error(failure);
+  process.exit(2);
+}
+
 /**
  * media-use eval — compare baseline (no media-use) vs. with media-use
  * on real registry blocks. Produces an HTML report.

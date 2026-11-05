@@ -17,8 +17,19 @@ import argparse
 import asyncio
 import os
 import sys
+import json
 import wave
 from pathlib import Path
+
+# Fork modification (2026-11-05): reject model execution before optional imports or auth.
+_execution_policy = os.environ.get("HYPERFRAMES_EXECUTION_POLICY", "")
+if _execution_policy not in ("", "standard"):
+    _code = "policy_denied" if _execution_policy == "company-agents-only" else "policy_invalid"
+    print(json.dumps({"ok": False, "error": {
+        "code": _code,
+        "message": "Standalone Lyria generation is not enabled by this execution policy.",
+    }}), file=sys.stderr)
+    sys.exit(2)
 
 # Windows sizes stdio to the ANSI code page (cp1252). These scripts emit UTF-8 on
 # every platform; say so rather than depending on the console's code page. Carry
@@ -134,3 +145,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
