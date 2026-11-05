@@ -1,4 +1,5 @@
 ---
+# Fork modification (2026-11-05): explain container available-memory estimates.
 title: Fix a slow preview or render
 description: Find the expensive part of a composition and make it cheaper.
 ---
@@ -19,13 +20,13 @@ and a pixel comparison confirms the picture did not change.
 
 ## Start with the symptom
 
-| What you see | Check first |
-| --- | --- |
-| Preview stutters in one scene | Large blurs, masks, shadows, or many animated layers in that scene |
-| Preview pauses the first time an image appears | Oversized source images or image decoding |
-| The whole page becomes slow | Script work, layout thrashing, or too many DOM nodes |
-| Render is slow but the result is correct | Source-video extraction, frame capture, or encoding |
-| WebM takes much longer than MP4 | VP9 encoding; transparent WebM is CPU-heavy |
+| What you see                                   | Check first                                                        |
+| ---------------------------------------------- | ------------------------------------------------------------------ |
+| Preview stutters in one scene                  | Large blurs, masks, shadows, or many animated layers in that scene |
+| Preview pauses the first time an image appears | Oversized source images or image decoding                          |
+| The whole page becomes slow                    | Script work, layout thrashing, or too many DOM nodes               |
+| Render is slow but the result is correct       | Source-video extraction, frame capture, or encoding                |
+| WebM takes much longer than MP4                | VP9 encoding; transparent WebM is CPU-heavy                        |
 
 ## Reduce expensive browser work
 
@@ -68,6 +69,22 @@ npx hyperframes render --format webm --vp9-cpu-used 2 --output overlay.webm
 ```
 
 `--vp9-cpu-used` accepts integers from `-8` to `8`; higher values are faster with a larger quality/size tradeoff.
+
+## Render inside a memory-limited container
+
+On Linux, `doctor` and capture's optional extra-browser memory check bound
+available memory by readable cgroup v2 `memory.max` / `memory.current`, or
+cgroup v1 `memory.limit_in_bytes` / `memory.usage_in_bytes`. A container with
+an 8 GiB limit and 7.5 GiB already charged reports at most 512 MiB available,
+even if the host has much more free RAM. Usage is read again for each check.
+
+The estimate is conservative: it subtracts charged page cache rather than
+assuming that the cache can be reclaimed before another browser starts. If
+usage is unreadable, only the known ceiling can bound the host estimate.
+These probes use the container's namespace-root cgroup files; they do not
+discover tighter limits in nested host slices or guarantee that a render
+cannot run out of memory. Auto worker sizing still uses the effective total
+memory budget, not this changing available-memory estimate.
 
 ## Related topics
 

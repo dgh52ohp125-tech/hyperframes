@@ -1,3 +1,4 @@
+// Fork modification (2026-11-05): bound available memory by live cgroup usage.
 /**
  * System-memory probing for memory-adaptive render behaviour.
  *
@@ -22,7 +23,9 @@ const BYTES_PER_MIB_BIGINT = BigInt(BYTES_PER_MIB);
 // don't see, and that's acceptable — bare hosts are covered by total-RAM
 // detection, and chasing nested slices adds fragility for no container gain.
 const CGROUP_V2_MEMORY_MAX_PATH = "/sys/fs/cgroup/memory.max";
+const CGROUP_V2_MEMORY_CURRENT_PATH = "/sys/fs/cgroup/memory.current";
 const CGROUP_V1_MEMORY_LIMIT_PATH = "/sys/fs/cgroup/memory/memory.limit_in_bytes";
+const CGROUP_V1_MEMORY_USAGE_PATH = "/sys/fs/cgroup/memory/memory.usage_in_bytes";
 // Kernel no-limit sentinel is page-rounded 2^63-1 (~9223372036854771712); >= 2^60 is implausible as a real limit.
 const CGROUP_V1_NO_LIMIT_CUTOFF_BYTES = 2n ** 60n;
 
@@ -228,7 +231,39 @@ export function isLowMemorySystem(totalMb: number = getSystemTotalMb()): boolean
   return totalMb <= LOW_MEMORY_TOTAL_MB_THRESHOLD;
 }
 
-/** Memory available in MiB: on macOS and Linux, counting pages the OS reclaims on demand. */
+/**
+ * Conservative container headroom. Do not cache usage: another render or
+ * process can consume memory between two capture decisions. Use the same
+ * namespace-root cgroup paths and v2 precedence as the total-memory probe.
+ */
+function getCgroupAvailableMemoryMb(): number | null {
+  const v2Content = readCgroupFile(CGROUP_V2_MEMORY_MAX_PATH);
+  const v1Content = v2Content === null ? readCgroupFile(CGROUP_V1_MEMORY_LIMIT_PATH) : null;
+  const limitMb = parseCgroupLimitMb(v2Content, v1Content);
+  if (limitMb === null || !Number.isFinite(limitMb)) return null;
+
+  const usagePath =
+    v2Content === null ? CGROUP_V1_MEMORY_USAGE_PATH : CGROUP_V2_MEMORY_CURRENT_PATH;
+  try {
+    const usage = readFileSync(usagePath, "utf8").trim();
+    if (/^\d+$/.test(usage)) {
+      // Round usage up, not down, so sub-MiB allocations cannot overstate
+      // remaining memory. Include charged page cache conservatively rather
+      // than assuming that all of it can be reclaimed before Chrome starts.
+      const usageMb = Math.ceil(Number(BigInt(usage)) / BYTES_PER_MIB);
+      return Math.max(0, limitMb - usageMb);
+    }
+  } catch {
+    // A missing/unreadable usage counter is not evidence of zero usage.
+    // We can still cap the host estimate at the known container ceiling.
+  }
+  return limitMb;
+}
+
+/**
+ * Available memory in MiB, including reclaimable host pages on macOS/Linux.
+ * On Linux, readable cgroup limits and live usage further bound the estimate.
+ */
 export function getAvailableMemoryMb(): number {
   const fallback = Math.trunc(freemem() / BYTES_PER_MIB);
 
@@ -255,16 +290,18 @@ export function getAvailableMemoryMb(): number {
   }
 
   if (platform() === "linux") {
+    let availableMb = fallback;
     try {
       const meminfo = readFileSync("/proc/meminfo", "utf-8");
       const match = meminfo.match(/MemAvailable:\s+(\d+)\s+kB/);
       if (match) {
-        return Math.trunc(parseInt(match[1]!, 10) / 1024);
+        availableMb = Math.trunc(parseInt(match[1]!, 10) / 1024);
       }
-      return fallback;
     } catch {
-      return fallback;
+      // Keep the OS fallback, but still apply the container limit below.
     }
+    const cgroupAvailableMb = getCgroupAvailableMemoryMb();
+    return cgroupAvailableMb === null ? availableMb : Math.min(availableMb, cgroupAvailableMb);
   }
 
   return fallback;
