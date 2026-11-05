@@ -1,4 +1,5 @@
 // fallow-ignore-file code-duplication
+// Modified in this fork: cover shaping-safe text-spacing advice.
 import { describe, it, expect } from "vitest";
 import { lintHyperframeHtml } from "../hyperframeLinter.js";
 
@@ -2533,6 +2534,50 @@ describe("GSAP rules", () => {
     expect(findings).toHaveLength(2);
     expect(findings.every((f) => f.severity === "error")).toBe(true);
   });
+
+  it.each([
+    { text: "مرحبا بالعالم", properties: 'letterSpacing: "4px"', spacing: true, sizing: false },
+    { text: "Hello world", properties: 'wordSpacing: "4px"', spacing: true, sizing: false },
+    {
+      text: "مرحبا بالعالم",
+      properties: 'letterSpacing: "4px", wordSpacing: "8px", fontSize: 80',
+      spacing: true,
+      sizing: true,
+    },
+    { text: "مرحبا بالعالم", properties: "fontSize: 80", spacing: false, sizing: true },
+  ])(
+    "gsap_non_transform_motion: shaping-safe advice for $text / $properties",
+    async ({ text, properties, spacing, sizing }) => {
+      const html = `<html><body>
+        <div data-composition-id="c1" data-width="1920" data-height="1080">
+          <div id="t">${text}</div>
+        </div>
+        <script>
+          const tl = gsap.timeline({ paused: true });
+          tl.to("#t", { ${properties}, duration: 1 }, 0);
+          window.__timelines = { c1: tl };
+        </script>
+      </body></html>`;
+      const result = await lintHyperframeHtml(html);
+      const findings = result.findings.filter((f) => f.code === "gsap_non_transform_motion");
+      expect(findings).toHaveLength(1);
+      expect(findings[0]).toMatchObject({ severity: "error", selector: "#t" });
+      const hint = findings[0]?.fixHint;
+      if (spacing) {
+        expect(hint).toContain("only when per-character elements preserve text shaping");
+        expect(hint).toContain("Arabic and other joining scripts");
+        expect(hint).toContain("keep words or lines intact");
+        expect(hint).toContain("as a different effect");
+        expect(hint).toContain("keep the final spacing static");
+        expect(hint).toContain("uniform scale is NOT equivalent to spacing");
+      } else {
+        expect(hint).not.toContain("per-character");
+        expect(hint).not.toContain("joining scripts");
+      }
+      if (sizing) expect(hint).toContain("replace fontSize with scale (same visual, no reflow)");
+      else expect(hint).not.toContain("replace fontSize");
+    },
+  );
 
   it("gsap_non_transform_motion: text-reflow props are NOT html-in-canvas-exempt", async () => {
     const html = `
