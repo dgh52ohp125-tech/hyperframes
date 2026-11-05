@@ -1,4 +1,4 @@
-// Fork modification (2026-11-05): preserve decoded timing and inspect dense windows without inventing shot cuts.
+// Fork modification (2026-11-05): preserve decoded timing and inspect dense windows or detail crops without changing shot cuts.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -35,12 +35,15 @@ const HELP = `Prepare reference evidence for your own agent using installed FFmp
 
   node scripts/local-reference.mjs <local-video> --out <new-private-directory>
     [--mode style|recreate] [--samples 12] [--cuts 30,72] [--window 80:96] [--width 640]
+    [--crop left:top:right:bottom]
 
 Accepts self-contained MP4/MOV, MKV/WebM, AVI, Ogg, or MPEG-TS clips up to 60 s / 2 GiB.
 Samples are decoded frame indexes, not rounded timestamps. --cuts supplies verified
 first frames of new shots, not times; samples include each cut and both neighbors.
 --window start:end includes every decoded frame in that half-open interval without
 adding shot cuts. Increase --samples to fit all required frames (maximum 64).
+--crop uses percentage edges (0–100) in the displayed orientation, e.g. 25:20:75:80.
+Crop before downscaling to inspect small details; keep a separate full-frame overview.
 The output directory must not exist. No source copy, upload, model, login, browser,
 package installation, or hosted Reverse request is performed. Outputs can contain
 private media: keep them private. Your chosen agent has its own data/billing policy.
@@ -131,6 +134,56 @@ export function planSamples(frameCount, count, cuts = [], window) {
     selected.add(start + Math.floor(gap / 2));
   }
   return [...selected].sort((a, b) => a - b);
+}
+
+function validateCrop(crop) {
+  if (!crop || typeof crop !== "object" || Array.isArray(crop)) {
+    throw new Error("--crop must contain left, top, right, and bottom percentage edges.");
+  }
+  const {
+    left_percent: left,
+    top_percent: top,
+    right_percent: right,
+    bottom_percent: bottom,
+  } = crop;
+  if (
+    ![left, top, right, bottom].every(
+      (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100,
+    ) ||
+    left >= right ||
+    top >= bottom
+  ) {
+    throw new Error("--crop requires 0 <= left < right <= 100 and 0 <= top < bottom <= 100.");
+  }
+}
+
+export function parseCrop(value) {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "string" ||
+    !/^\d{1,3}(?:\.\d{1,3})?(?::\d{1,3}(?:\.\d{1,3})?){3}$/.test(value)
+  ) {
+    throw new Error(
+      "--crop must be left:top:right:bottom percentage edges, with at most three decimal places.",
+    );
+  }
+  const [left, top, right, bottom] = value.split(":").map(Number);
+  const crop = {
+    left_percent: left,
+    top_percent: top,
+    right_percent: right,
+    bottom_percent: bottom,
+  };
+  validateCrop(crop);
+  return crop;
+}
+
+function cropFilter(crop) {
+  const left = `floor(iw*${crop.left_percent}/100)`;
+  const top = `floor(ih*${crop.top_percent}/100)`;
+  const width = `floor(iw*${crop.right_percent}/100)-${left}`;
+  const height = `floor(ih*${crop.bottom_percent}/100)-${top}`;
+  return `crop=w='${width}':h='${height}':x='${left}':y='${top}':exact=1,`;
 }
 
 function command(binary, args) {
@@ -314,6 +367,7 @@ function shotPlan(manifest, cuts) {
     mode: manifest.mode,
     boundary_semantics: "zero-based decoded frame indexes; start inclusive, end exclusive",
     review_status: "unreviewed",
+    preview_crop: manifest.preview_crop,
     source_rights: { basis: "", attribution: "", permitted_reuse: "" },
     shots: edges.slice(1).map((end, index) => ({
       id: `S${String(index + 1).padStart(2, "0")}`,
@@ -346,6 +400,7 @@ function contactSheet(manifest) {
 </head><body><h1>Local reference evidence</h1>
 <p>${manifest.clock.frame_count} decoded frames. Frame indexes and source PTS are authoritative. Preview times are labels, not seek instructions. This sampled overview can miss brief events. Review every cut and transition in detail before authoring.</p>
 ${manifest.review_window ? `<p>Dense review: every decoded frame in [${manifest.review_window.start_frame}, ${manifest.review_window.end_frame_exclusive}) is included. This review window does not declare new shots; frames outside it remain sampled.</p>` : ""}
+${manifest.preview_crop ? `<p>Detail crop: left ${manifest.preview_crop.left_percent}%, top ${manifest.preview_crop.top_percent}%, right ${manifest.preview_crop.right_percent}%, bottom ${manifest.preview_crop.bottom_percent}% of the displayed frame. Surroundings are excluded; inspect a separate full-frame overview before judging composition or motion.</p>` : ""}
 <main>${manifest.samples.map((sample) => `<figure><a href="${sample.file}"><img src="${sample.file}" alt="Decoded frame ${sample.frame}"></a><figcaption>f${sample.frame} · ${sample.time_seconds.toFixed(6)} s · PTS ${sample.pts}</figcaption></figure>`).join("\n")}</main>
 </body></html>\n`;
 }
@@ -358,6 +413,8 @@ Goal: ${mode === "recreate" ? "recreate the authorized reference with editable l
 ## Inspect before authoring
 
 1. Read manifest.json and inspect the PNG pixels, not just this brief or filenames.
+   If preview_crop is set, these are detail views, not complete frames. Inspect a separate
+   uncropped pack before inferring whole-frame layout, movement, or off-crop events.
 2. Verify rights with the user and fill shot-plan.json. Empty fields are unknown, not approval.
 3. Inspect cut boundaries and brief transitions at full temporal resolution. Samples can miss events.
    A manifest review_window guarantees every decoded frame only within its half-open interval;
@@ -424,6 +481,7 @@ export function prepareReference({
   samples = 12,
   cuts = [],
   window,
+  crop,
   width = 640,
 }) {
   // Permit native Windows absolute paths, but never UNC shares or URI protocols.
@@ -432,6 +490,7 @@ export function prepareReference({
   if (!["style", "recreate"].includes(mode)) throw new Error("--mode must be style or recreate.");
   integer(samples, "--samples", 2, 64);
   integer(width, "--width", 64, 1280);
+  if (crop !== undefined) validateCrop(crop);
   const inputStat = statSync(input);
   if (!inputStat.isFile() || inputStat.size > MAX_BYTES) {
     throw new Error("The source must be a regular file no larger than 2 GiB.");
@@ -467,7 +526,7 @@ export function prepareReference({
       "-sn",
       "-dn",
       "-vf",
-      `select='${expression}',scale=w='max(1,round(iw*sar*min(1,min(${width}/(iw*sar),${width}/ih))))':h='max(1,round(ih*min(1,min(${width}/(iw*sar),${width}/ih))))',setsar=1`,
+      `select='${expression}',${crop === undefined ? "" : cropFilter(crop)}scale=w='max(1,round(iw*sar*min(1,min(${width}/(iw*sar),${width}/ih))))':h='max(1,round(ih*min(1,min(${width}/(iw*sar),${width}/ih))))',setsar=1`,
       "-fps_mode",
       "passthrough",
       "-frames:v",
@@ -518,10 +577,29 @@ export function prepareReference({
               end_frame_exclusive: window.end_frame_exclusive,
               coverage: "every decoded frame; not a shot boundary declaration",
             },
+      preview_crop:
+        crop === undefined
+          ? null
+          : {
+              left_percent: crop.left_percent,
+              top_percent: crop.top_percent,
+              right_percent: crop.right_percent,
+              bottom_percent: crop.bottom_percent,
+              coordinate_space:
+                "percentage edges after autorotation, before sample-aspect correction",
+              pixel_bounds:
+                "floor(size * edge / 100); right and bottom exclusive; no chroma rounding",
+              scope: "detail view only; surrounding frame excluded",
+            },
       samples: picked,
       warnings: [
         "A sampled overview is not complete motion analysis and can miss one-frame events.",
         "Shot-plan fields are intentionally unreviewed until your agent inspects the pixels.",
+        ...(crop === undefined
+          ? []
+          : [
+              "Cropped detail views exclude surrounding content. Keep a separate uncropped overview; crops do not establish whole-frame composition or motion.",
+            ]),
         ...(info.clock.average_rate_disagrees_with_timestamps
           ? [
               "Average frame-rate metadata disagrees with decoded timestamps. Use the recorded PTS instead of assuming frame / average_fps is the clock.",
@@ -571,6 +649,7 @@ function main() {
         samples: { type: "string", default: "12" },
         cuts: { type: "string" },
         window: { type: "string" },
+        crop: { type: "string" },
         width: { type: "string", default: "640" },
       },
     });
@@ -595,6 +674,7 @@ function main() {
       samples: Number(values.samples),
       cuts,
       window: parseFrameWindow(values.window),
+      crop: parseCrop(values.crop),
       width: Number(values.width),
     });
     console.log(JSON.stringify(result, null, 2));
