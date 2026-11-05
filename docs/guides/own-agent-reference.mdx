@@ -1,0 +1,168 @@
+---
+title: "Study references with your own agent"
+sidebarTitle: "Own-agent references"
+description: "Prepare a private, frame-indexed reference pack with local FFmpeg, then use your existing agent to author an editable HyperFrames project."
+---
+
+The repository includes a standalone evidence-preparation tool for teams that
+want to use their existing coding agent rather than an integrated media model.
+It extracts a bounded set of reference frames, preserves the source clock, and
+creates a shot-plan template. Your agent supplies the visual judgment and writes
+the composition.
+
+This is an independent local workflow. It does not invoke Studio's Reference
+analysis, the hosted Reverse service, or a media-generation provider. It does
+not change those services' access requirements. It is not an automatic video
+reconstruction model.
+
+## Prepare a short authorized clip
+
+Requirements:
+
+- A checkout of this repository and Node.js 22 or newer. This script has no npm dependencies.
+- FFmpeg 6 or newer and ffprobe on `PATH`, installed separately.
+- A local, self-contained MP4/MOV, MKV/WebM, AVI, Ogg, or MPEG-TS file that you are authorized to inspect.
+- At most 60 seconds, 2 GiB, and 32 megapixels per clip. Split longer work into authorized, cut-aligned sections.
+- A new output directory whose parent already exists. Prefer a private directory outside the repository.
+
+From the repository root:
+
+```bash
+node scripts/local-reference.mjs ./reference.mp4 --out ../private-reference
+```
+
+For a faithful recreation rather than a new story borrowing the visual grammar:
+
+```bash
+node scripts/local-reference.mjs ./reference.mp4 \
+  --out ../private-recreation \
+  --mode recreate
+```
+
+These are repository scripts, not commands in an upstream npm release. They do
+not require a full workspace build or start another agent. The script only
+launches the installed `ffprobe` and `ffmpeg` executables. It restricts their
+input protocols to local files and uses a container-format allowlist, so a
+playlist disguised as an MP4 is rejected rather than followed to a network URL.
+It does not install missing tools or copy the original source into the output.
+Use trusted executables and a genuinely local filesystem. The script is not an
+OS network sandbox and cannot identify a remotely mounted directory from its
+path. Do not run concurrent preparations or other writers against the same
+output path.
+
+## Keep the source clock
+
+The manifest preserves the average frame rate as a rational value, such as
+`30000/1001`, the time base, the decoded frame count, and every frame's presentation
+timestamp. Samples are selected by decoded frame index, not by rounded seconds.
+
+For example, if independent inspection establishes that new shots begin at
+frames 83 and 164:
+
+```bash
+node scripts/local-reference.mjs ./reference.mp4 \
+  --out ../private-reference-cuts \
+  --cuts 83,164 \
+  --samples 16
+```
+
+The tool keeps the first and last frames and the frame before, at, and after
+each supplied cut. Remaining samples fill the largest unsampled gaps. The
+default budget is 12 samples; the maximum is 64. If the boundary frames exceed
+the budget, the command fails instead of silently dropping them. Cut indexes
+are zero-based and must be strictly inside the clip.
+
+**The tool does not discover or validate cuts.** A supplied cut is an observation
+to verify, not an AI-generated conclusion. Without supplied cuts, the shot plan
+contains one unreviewed interval. A sampled overview can miss a one-frame flash,
+a caption switch, or an entire short shot. Inspect such windows separately at
+their native frame rate before authoring.
+
+Variable timing is flagged from decoded timestamps. Do not use `frame / fps`
+as a clock for such a source. Use the recorded timestamps or prepare a separate,
+constant-rate working copy before a strict comparison. HDR is flagged too:
+the small PNG previews are not a color-managed HDR fidelity reference. The
+source is never normalized or tone-mapped in place.
+
+## Inspect the evidence pack
+
+The output contains:
+
+- `manifest.json`: source SHA-256, basename and size, media characteristics,
+  exact clock, supplied cuts, sampled-frame paths, and limitations. Absolute
+  source paths, arbitrary media tags, and authentication state are not included.
+- `frames/f000083.png`: sampled pixels named by decoded frame index. Previews
+  respect rotation and sample aspect ratio; both dimensions are bounded by
+  `--width` (default 640, allowed 64–1280).
+- `contact-sheet.html`: a local, script-free overview with frame and timestamp
+  labels. Open it locally. It has no external fonts, scripts, or resources.
+- `shot-plan.json`: editable half-open frame ranges with fields for action,
+  layers, asset provenance, typography, palette, motion/easing, transitions,
+  audio, approximations, and evidence frames. Empty fields mean unknown.
+- `AGENT_BRIEF.md`: a handoff for the existing agent, including separate
+  recreation and style-transfer quality criteria and a retargeting check.
+- `.gitignore`: excludes the evidence directory's contents from normal staging.
+
+The pack contains source pixels and may contain identifying information. Keep
+it private. A `.gitignore` is not access control and does not stop force-adds,
+uploads, or other sharing. The script never publishes the pack. Your chosen
+agent has its own provider, data handling, and billing: local preparation does
+not make a hosted agent offline or guarantee zero account usage.
+
+## Build an editable composition
+
+Ask your existing agent to inspect the PNGs, fill the shot plan, and distinguish
+measured observations from new design choices. One agent should own the global
+timeline. Other agents can build assets, research type, or review individual
+shots against that timing contract.
+
+Use ordinary HTML/CSS/SVG/canvas and deterministic, seekable animation. Read the
+core HyperFrames authoring contract before composing. Keep reused crops and
+footage in the provenance record. Playing the entire original video inside a
+new page is not an editable reconstruction.
+
+Flattened footage does not provide hidden geometry or semantic layers. Live
+action needs authorized footage; new acting cannot be recovered with HTML.
+When a shot cannot be reproduced well with available assets and code, record
+that limitation instead of silently calling a generation service.
+
+Existing `--local-only` media options are not a global agents-only policy or
+network sandbox. Some existing routes can use local models or service
+authentication. This script does not invoke those routes. Use explicit,
+authorized tools for later work and do not assume an AI provider is allowed
+merely because it is available.
+
+## Verify the result
+
+1. Run the installed HyperFrames static lint and browser check. If the browser
+   is unavailable, report that gate as blocked, not passed.
+2. Render locally with project-local media and fonts. Avoid render-time network
+   dependencies and make sure the reference clock matches the target clock.
+3. For a recreation, inspect timing, crop, typography, sound, and pixel
+   differences. Record which regions are rebuilt or reused.
+4. For a new story, judge pacing, hierarchy, transition grammar, readability,
+   and editability. Whole-frame similarity is not the right score for changed
+   words, subjects, or footage.
+5. Demonstrate retargeting by changing one title and one visual value in the
+   source project, then re-render. Re-render twice to check determinism.
+6. Deliver the source project, authorized assets, provenance, local render, and
+   remaining mismatches. Evidence extraction alone does not establish visual
+   fidelity or professional production quality.
+
+## Test the preparation tool
+
+```bash
+node --test scripts/local-reference.test.mjs
+```
+
+The tests generate their own tiny geometric/color clips. They verify fractional
+frame rates, cut-neighbor pixels, variable timing, rotation, non-square pixels,
+output protection, and rejection of network inputs and disguised playlists.
+Media integration tests are explicitly skipped if FFmpeg or ffprobe is missing;
+that is not a completed media-tool validation.
+
+## Related topics
+
+- [Make videos with Codex](/guides/with-codex)
+- [Deterministic compositions](/concepts/determinism)
+- [Render a video](/guides/rendering)
