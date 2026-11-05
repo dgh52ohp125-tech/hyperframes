@@ -1,4 +1,4 @@
-// Fork modification (2026-11-05): cover decoded timing and dense review windows separate from cuts.
+// Fork modification (2026-11-05): cover decoded timing, dense review windows, and cropped detail evidence.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+  parseCrop,
   parseFrameWindow,
   parseRational,
   planSamples,
@@ -270,6 +271,7 @@ test("CLI help and argument errors require no media tools", () => {
     ["source.mp4", "--cuts", "1,,2"],
     ["source.mp4", "--window", "2:1"],
     ["source.mp4", "--window", "1:2:3"],
+    ["source.mp4", "--crop", "0:0:101:100"],
     ["source.mp4", "--unknown"],
   ]) {
     const result = spawnSync(process.execPath, [script, ...args], { encoding: "utf8" });
@@ -550,4 +552,190 @@ test("failed sampling does not create output or mutate the source", integration,
   assert.throws(() => prepareReference({ source, out, cuts: [99] }), /Cut frame/);
   assert.equal(existsSync(out), false);
   assert.deepEqual(readdirSync(directory), ["source.mp4"]);
+});
+
+test("crop parsing uses strict percentage edges and validates direct calls", (t) => {
+  assert.equal(parseCrop(undefined), undefined);
+  assert.deepEqual(parseCrop("9.375:14.063:54.167:65.625"), {
+    left_percent: 9.375,
+    top_percent: 14.063,
+    right_percent: 54.167,
+    bottom_percent: 65.625,
+  });
+  for (const value of [
+    "",
+    "1:2:3",
+    "0:0:100:100:1",
+    "0:0:101:100",
+    "50:0:50:100",
+    "75:0:50:100",
+    "0:80:100:60",
+    "-1:0:100:100",
+    "0:0:1e2:100",
+    "0:0:NaN:100",
+    "0:0:0.0001:100",
+    " 0:0:100:100",
+    "0:0:100:100 ",
+    "0:0:100:100,scale=999",
+  ]) {
+    assert.throws(() => parseCrop(value), /crop/);
+  }
+  const directory = fixture(t);
+  for (const crop of [
+    null,
+    [],
+    {},
+    { left_percent: 0, top_percent: 0, right_percent: "100", bottom_percent: 100 },
+    { left_percent: 0, top_percent: 0, right_percent: Infinity, bottom_percent: 100 },
+  ]) {
+    assert.throws(
+      () =>
+        prepareReference({
+          source: join(directory, "absent.mp4"),
+          out: join(directory, "out"),
+          crop,
+        }),
+      /crop/,
+    );
+  }
+  assert.deepEqual(readdirSync(directory), []);
+});
+
+function decodedPixels(path) {
+  return ffmpeg(["-i", path, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]);
+}
+
+function pngSize(path) {
+  const png = readFileSync(path);
+  return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
+}
+
+test("crop preserves odd pixel bounds on subsampled input without upscaling", integration, (t) => {
+  const directory = fixture(t);
+  const source = join(directory, "gradient.mkv");
+  ffmpeg([
+    "-f",
+    "lavfi",
+    "-i",
+    "nullsrc=s=96x64:r=5,geq=lum='mod(X*17+Y*37,220)':cb=128:cr=128",
+    "-frames:v",
+    "2",
+    "-c:v",
+    "ffv1",
+    "-pix_fmt",
+    "yuv420p",
+    source,
+  ]);
+  const out = join(directory, "detail");
+  prepareReference({ source, out, samples: 2, crop: parseCrop("9.375:14.063:54.167:65.625") });
+  const manifest = json(join(out, "manifest.json"));
+  const detail = join(out, manifest.samples[0].file);
+  assert.deepEqual(pngSize(detail), { width: 43, height: 33 });
+  const original = decodedPixels(source);
+  const expected = Buffer.concat(
+    Array.from({ length: 33 }, (_, row) =>
+      original.subarray(((row + 9) * 96 + 9) * 3, ((row + 9) * 96 + 52) * 3),
+    ),
+  );
+  const actual = decodedPixels(detail);
+  assert.equal(actual.length, expected.length);
+  assert.ok(
+    actual.every((value, index) => Math.abs(value - expected[index]) <= 2),
+    "exact pixel positions survive with at most two levels of color-conversion rounding",
+  );
+  assert.equal(manifest.preview_crop.left_percent, 9.375);
+  assert.match(manifest.preview_crop.pixel_bounds, /floor/);
+  assert.deepEqual(json(join(out, "shot-plan.json")).preview_crop, manifest.preview_crop);
+  assert.match(readFileSync(join(out, "contact-sheet.html"), "utf8"), /Detail crop: left 9.375%/);
+  assert.match(readFileSync(join(out, "AGENT_BRIEF.md"), "utf8"), /not complete frames/);
+  assert.ok(manifest.warnings.some((warning) => warning.startsWith("Cropped detail")));
+});
+
+test("crop is applied in displayed orientation after rotation", integration, (t) => {
+  const directory = fixture(t);
+  const original = join(directory, "landscape.mp4");
+  const source = join(directory, "rotated.mp4");
+  makeVideo(original, ["drawbox=x=0:y=0:w=48:h=64:color=lime:t=fill"]);
+  ffmpeg(["-display_rotation", "90", "-i", original, "-c", "copy", source]);
+  const overview = join(directory, "overview");
+  const out = join(directory, "detail");
+  prepareReference({ source, out: overview, samples: 2 });
+  prepareReference({ source, out, samples: 2, crop: parseCrop("0:0:100:50") });
+  const fullFile = join(overview, "frames/f000000.png");
+  const cropFile = join(out, "frames/f000000.png");
+  assert.deepEqual(pngSize(fullFile), { width: 64, height: 96 });
+  assert.deepEqual(pngSize(cropFile), { width: 64, height: 48 });
+  assert.deepEqual(decodedPixels(cropFile), decodedPixels(fullFile).subarray(0, 64 * 48 * 3));
+  const rgb = decodedPixels(cropFile);
+  assert.ok(
+    rgb[0] > 240 && rgb[1] < 10 && rgb[2] < 10,
+    "displayed top half is the red right side of the encoded frame",
+  );
+});
+
+test(
+  "crop respects sample aspect ratio and leaves the source clock and shots unchanged",
+  integration,
+  (t) => {
+    const directory = fixture(t);
+    const source = join(directory, "wide.mp4");
+    makeVideo(source, ["setsar=2/1"]);
+    const out = join(directory, "detail");
+    const overview = join(directory, "overview");
+    const options = {
+      source,
+      samples: 10,
+      cuts: [5, 10],
+      window: parseFrameWindow("7:10"),
+      width: 128,
+    };
+    prepareReference({ ...options, out: overview });
+    prepareReference({ ...options, out, crop: parseCrop("25:0:75:100") });
+    const manifest = json(join(out, "manifest.json"));
+    const full = json(join(overview, "manifest.json"));
+    assert.deepEqual(pngSize(join(out, manifest.samples[0].file)), { width: 96, height: 64 });
+    assert.deepEqual(manifest.clock, full.clock);
+    assert.deepEqual(manifest.samples, full.samples);
+    assert.deepEqual(manifest.cuts, full.cuts);
+    assert.deepEqual(manifest.review_window, full.review_window);
+    assert.deepEqual(
+      json(join(out, "shot-plan.json")).shots,
+      json(join(overview, "shot-plan.json")).shots,
+    );
+    assert.deepEqual(manifest.source, full.source);
+  },
+);
+
+test("full-frame crop matches uncropped pixel evidence", integration, (t) => {
+  const directory = fixture(t);
+  const source = join(directory, "full.mp4");
+  makeVideo(source);
+  const out = join(directory, "detail");
+  const overview = join(directory, "overview");
+  prepareReference({ source, out: overview, samples: 2 });
+  prepareReference({ source, out, samples: 2, crop: parseCrop("0:0:100:100") });
+  for (const name of readdirSync(join(out, "frames"))) {
+    assert.deepEqual(
+      readFileSync(join(out, "frames", name)),
+      readFileSync(join(overview, "frames", name)),
+    );
+  }
+  assert.equal(json(join(overview, "manifest.json")).preview_crop, null);
+});
+
+test("crop bounds that round to zero leave no output or temporary pack", integration, (t) => {
+  const directory = fixture(t);
+  const source = join(directory, "tiny.mp4");
+  makeVideo(source);
+  const original = readFileSync(source);
+  for (const crop of ["0:0:0.001:100", "0:0:100:0.001"]) {
+    const out = join(directory, "detail");
+    assert.throws(
+      () => prepareReference({ source, out, samples: 2, crop: parseCrop(crop) }),
+      /ffmpeg failed/,
+    );
+    assert.equal(existsSync(out), false);
+    assert.deepEqual(readdirSync(directory), ["tiny.mp4"]);
+  }
+  assert.deepEqual(readFileSync(source), original);
 });
