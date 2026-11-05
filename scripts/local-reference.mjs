@@ -1,4 +1,4 @@
-// Fork modification (2026-11-05): estimate missing tails from decoded cadence and flag misleading average-fps metadata.
+// Fork modification (2026-11-05): preserve decoded timing and inspect dense windows without inventing shot cuts.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -34,11 +34,13 @@ const INPUT_OPTIONS = [
 const HELP = `Prepare reference evidence for your own agent using installed FFmpeg and ffprobe.
 
   node scripts/local-reference.mjs <local-video> --out <new-private-directory>
-    [--mode style|recreate] [--samples 12] [--cuts 30,72] [--width 640]
+    [--mode style|recreate] [--samples 12] [--cuts 30,72] [--window 80:96] [--width 640]
 
 Accepts self-contained MP4/MOV, MKV/WebM, AVI, Ogg, or MPEG-TS clips up to 60 s / 2 GiB.
 Samples are decoded frame indexes, not rounded timestamps. --cuts supplies verified
 first frames of new shots, not times; samples include each cut and both neighbors.
+--window start:end includes every decoded frame in that half-open interval without
+adding shot cuts. Increase --samples to fit all required frames (maximum 64).
 The output directory must not exist. No source copy, upload, model, login, browser,
 package installation, or hosted Reverse request is performed. Outputs can contain
 private media: keep them private. Your chosen agent has its own data/billing policy.
@@ -67,10 +69,33 @@ function integer(value, label, min, max) {
   return value;
 }
 
-export function planSamples(frameCount, count, cuts = []) {
+function validateFrameWindow(window, frameCount) {
+  if (!window || typeof window !== "object" || Array.isArray(window)) {
+    throw new Error("--window must contain a start frame and exclusive end frame.");
+  }
+  integer(window.start_frame, "Window start frame", 0, frameCount - 1);
+  integer(window.end_frame_exclusive, "Window exclusive end frame", 1, frameCount);
+  if (window.end_frame_exclusive <= window.start_frame) {
+    throw new Error("Window exclusive end frame must be greater than its start frame.");
+  }
+}
+
+export function parseFrameWindow(value) {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !/^\d+:\d+$/.test(value)) {
+    throw new Error("--window must be start:end decoded frame indexes (end exclusive).");
+  }
+  const [start, end] = value.split(":").map(Number);
+  const window = { start_frame: start, end_frame_exclusive: end };
+  validateFrameWindow(window, MAX_FRAMES);
+  return window;
+}
+
+export function planSamples(frameCount, count, cuts = [], window) {
   integer(frameCount, "Frame count", 1, MAX_FRAMES);
   integer(count, "--samples", 2, 64);
   for (const cut of cuts) integer(cut, "Cut frame", 1, frameCount - 1);
+  if (window !== undefined) validateFrameWindow(window, frameCount);
   const uniqueCuts = [...new Set(cuts)].sort((a, b) => a - b);
   const selected = new Set([0, frameCount - 1]);
   for (const cut of uniqueCuts) {
@@ -78,9 +103,18 @@ export function planSamples(frameCount, count, cuts = []) {
       if (frame < frameCount) selected.add(frame);
     }
   }
+  if (window !== undefined) {
+    for (let frame = window.start_frame; frame < window.end_frame_exclusive; frame++) {
+      selected.add(frame);
+    }
+  }
   if (selected.size > count) {
+    const advice =
+      selected.size > 64
+        ? "choose a shorter window or fewer cuts (maximum 64)."
+        : "increase --samples (maximum 64).";
     throw new Error(
-      `Cut boundaries need ${selected.size} samples; increase --samples (maximum 64).`,
+      `${window === undefined ? "Cut boundaries" : "Window, cut boundaries, and clip endpoints"} need ${selected.size} samples; ${advice}`,
     );
   }
   // Fill the largest unsampled gaps. Never discard a required boundary to meet the budget.
@@ -311,6 +345,7 @@ function contactSheet(manifest) {
 <style>body{font:16px system-ui;background:#151719;color:#f4f5f6;margin:24px}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}figure{margin:0}img{display:block;width:100%;max-height:460px;object-fit:contain;background:#000}figcaption{padding:8px 0;font-variant-numeric:tabular-nums}p{max-width:80ch;color:#c8ced3}</style>
 </head><body><h1>Local reference evidence</h1>
 <p>${manifest.clock.frame_count} decoded frames. Frame indexes and source PTS are authoritative. Preview times are labels, not seek instructions. This sampled overview can miss brief events. Review every cut and transition in detail before authoring.</p>
+${manifest.review_window ? `<p>Dense review: every decoded frame in [${manifest.review_window.start_frame}, ${manifest.review_window.end_frame_exclusive}) is included. This review window does not declare new shots; frames outside it remain sampled.</p>` : ""}
 <main>${manifest.samples.map((sample) => `<figure><a href="${sample.file}"><img src="${sample.file}" alt="Decoded frame ${sample.frame}"></a><figcaption>f${sample.frame} · ${sample.time_seconds.toFixed(6)} s · PTS ${sample.pts}</figcaption></figure>`).join("\n")}</main>
 </body></html>\n`;
 }
@@ -325,6 +360,8 @@ Goal: ${mode === "recreate" ? "recreate the authorized reference with editable l
 1. Read manifest.json and inspect the PNG pixels, not just this brief or filenames.
 2. Verify rights with the user and fill shot-plan.json. Empty fields are unknown, not approval.
 3. Inspect cut boundaries and brief transitions at full temporal resolution. Samples can miss events.
+   A manifest review_window guarantees every decoded frame only within its half-open interval;
+   it does not identify new shots. Request another --window start:end pack for other brief events.
 4. Use decoded frame indexes and the recorded time base. Do not infer times by rounding fps.
 5. Fill each shot's observed action, layers, asset provenance, typography, palette, motion/easing,
    transitions, audio, and intentional approximations. Mark observations separately from design choices.
@@ -386,6 +423,7 @@ export function prepareReference({
   mode = "style",
   samples = 12,
   cuts = [],
+  window,
   width = 640,
 }) {
   // Permit native Windows absolute paths, but never UNC shares or URI protocols.
@@ -403,7 +441,7 @@ export function prepareReference({
   const digest = hashFile(input);
   const info = probe(input);
   const cutFrames = [...new Set(cuts)].sort((a, b) => a - b);
-  const selected = planSamples(info.clock.frame_count, samples, cutFrames);
+  const selected = planSamples(info.clock.frame_count, samples, cutFrames, window);
   const work = mkdtempSync(join(dirname(destination), ".local-reference-"));
   try {
     mkdirSync(join(work, "frames"));
@@ -472,6 +510,14 @@ export function prepareReference({
         origin: "user-supplied frame indexes; not automatically verified",
         frames: cutFrames,
       },
+      review_window:
+        window === undefined
+          ? null
+          : {
+              start_frame: window.start_frame,
+              end_frame_exclusive: window.end_frame_exclusive,
+              coverage: "every decoded frame; not a shot boundary declaration",
+            },
       samples: picked,
       warnings: [
         "A sampled overview is not complete motion analysis and can miss one-frame events.",
@@ -524,6 +570,7 @@ function main() {
         mode: { type: "string", default: "style" },
         samples: { type: "string", default: "12" },
         cuts: { type: "string" },
+        window: { type: "string" },
         width: { type: "string", default: "640" },
       },
     });
@@ -547,6 +594,7 @@ function main() {
       mode: values.mode,
       samples: Number(values.samples),
       cuts,
+      window: parseFrameWindow(values.window),
       width: Number(values.width),
     });
     console.log(JSON.stringify(result, null, 2));
