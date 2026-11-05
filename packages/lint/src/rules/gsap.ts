@@ -1943,10 +1943,10 @@ export const gsapRules: LintRule<LintContext>[] = [
           );
         }
         if (reflowProps.length > 0) {
-          // Faithful fix differs by property: fontSize maps to scale (same visual), but
-          // letterSpacing/wordSpacing do NOT — uniform scale resizes glyphs, it does not
-          // change the gaps between them. The smooth equivalent of a spacing tween is a
-          // per-glyph split with an x transform per character.
+          // Modified in this fork: preserve joining-script shaping in spacing advice.
+          // fontSize maps to scale; spacing changes gaps rather than glyph size.
+          // Splitting Arabic and other joining scripts into characters breaks shaping.
+          // https://github.com/heygen-com/hyperframes/issues/5885
           const sizing = reflowProps.filter((p) => p === "fontSize");
           const spacing = reflowProps.filter((p) => p !== "fontSize");
           const parts: string[] = [];
@@ -1955,8 +1955,10 @@ export const gsapRules: LintRule<LintContext>[] = [
           }
           if (spacing.length > 0) {
             parts.push(
-              `for ${spacing.join("/")}, split the text into per-character elements and animate ` +
-                "each glyph's x (the spread), since uniform scale is NOT equivalent, or hold the final value statically",
+              `for ${spacing.join("/")}, keep the final spacing static, or animate each glyph's x ` +
+                "only when per-character elements preserve text shaping; for Arabic and other joining scripts, " +
+                "keep words or lines intact and animate their wrappers as a different effect, " +
+                "since uniform scale is NOT equivalent to spacing",
             );
           }
           fixes.push(
